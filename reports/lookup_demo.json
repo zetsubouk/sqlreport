@@ -1,0 +1,10 @@
+{
+  "name": "订单关联客户lookup演示",
+  "params": [],
+  "datasets": [
+    {"name": "orders", "ds": "demo", "sql": "SELECT id AS 订单ID, cust_id AS 客户ID, amount AS 金额 FROM orders"},
+    {"name": "custs", "ds": "demo", "sql": "SELECT cust_id AS 客户ID, cname AS 客户名称, level AS 等级 FROM customers"}
+  ],
+  "merge": {"mode": "lookup", "base": "orders", "with": "custs", "on": ["客户ID"], "cols": ["客户名称", "等级"]},
+  "cache_ttl": 60
+}

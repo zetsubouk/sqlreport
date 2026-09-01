@@ -1,0 +1,8 @@
+{
+  "name": "截断提示演示",
+  "ds": "demo",
+  "sql": "SELECT id AS 订单ID, region AS 区域, product AS 产品 FROM orders ORDER BY id",
+  "params": [],
+  "max_rows": 3,
+  "cache_ttl": 0
+}

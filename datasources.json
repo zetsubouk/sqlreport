@@ -1,5 +1,22 @@
 {
-  "demo": {"type": "sqlite", "path": "demo.db"},
-  "_mysql示例": {"type": "mysql", "host": "127.0.0.1", "port": 13306, "user": "oadb", "password": "***", "database": "a8100"},
-  "_sqlserver示例": {"type": "sqlserver", "host": "172.12.0.253", "port": 1433, "user": "sa", "password": "***", "database": "A810SP1YS"}
+  "demo": {
+    "type": "sqlite",
+    "path": "demo.db"
+  },
+  "_mysql示例": {
+    "type": "mysql",
+    "host": "127.0.0.1",
+    "port": 13306,
+    "user": "oadb",
+    "password": "***",
+    "database": "a8100"
+  },
+  "_sqlserver示例": {
+    "type": "sqlserver",
+    "host": "172.12.0.253",
+    "port": 1433,
+    "user": "sa",
+    "password": "***",
+    "database": "A810SP1YS"
+  }
 }

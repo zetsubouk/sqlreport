@@ -6,7 +6,7 @@ Python 标准库实现；MySQL/SQLServer 驱动按需懒加载（pymysql / pyodb
 import base64, json, os, re, sys, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from db import DS_STORE, load_json, run_query, merge_union, merge_lookup
+from db import CACHE, DS_STORE, load_json, run_query, merge_union, merge_lookup
 from params import build_values, substitute, normalize_report
 
 BASE = os.path.dirname(os.path.abspath(__file__))
