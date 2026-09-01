@@ -3,12 +3,26 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化。
 最新变更置顶。
 
-## [Unreleased]
+## [v0.2] - 待发布
+
+### 新增
+- **数据源管理后台** `/datasources`：Web 界面新建/编辑/删除数据源、连接测试（返回耗时 ms）、启用/禁用、被引用报表检查（删除二次确认）；改动免重启生效（mtime 懒加载 + 原子写）
+- **跨数据源联合查询**：报表支持多数据集 `datasets`，各数据集独立选库写 SQL；纵向合并 union（按列名对齐）与横向关联 lookup（dict 哈希 left join，右表上限 10 万行）
+- **编辑器数据集 UI**：数据集块增删、每数据集选源写 SQL、单数据集试运行前 20 行（`POST /preview`）
+- **查询稳定性**：每数据源 `timeout` 超时、fetchmany 分批 + 单数据集 10 万行硬顶、只读 SQL 校验（仅单条 SELECT/WITH）
+- **TTL 结果缓存**：报表级 `cache_ttl`（0=实时），key=报表id+参数哈希，单条目 2 万行/全表 10 万行/50 条目 LRU 上限；保存报表即清空该报表缓存
+- **查询体验**：查询页 loading 态（按钮禁用防重复提交）、行数/耗时/缓存命中/截断提示；查询响应统一 `{columns, rows, truncated, cached, elapsed_ms}`
+- 演示报表：`union_demo`（双数据集 union）、`lookup_demo`（订单关联客户）、`trunc_demo`（截断提示）
+
+### 兼容性
+- 旧报表 `{ds, sql}` 格式零迁移可用；单数据集保存时仍写回旧格式（git diff 稳定）
+- 旧 `_` 前缀数据源隐藏语义保留（与 `enabled:false` 等价）
+- 对外既有路由签名不变；管理页默认仅本机 127.0.0.1 可访问（`config.json` 的 `admin_password` 非空时改走 HTTP Basic）
 
 ### 计划中（见 PLAN.md）
 - P0：MySQL/SQLServer 真库连通测试、SQLServer ODBC 部署文档、数值列类型保留
-- P1：合计行、简单交叉表（pivot 配置）、点列头排序、分页/行数上限
-- P2：查询超时与只读拦截、报表 token 鉴权、真 .xlsx 导出、systemd/Docker 化、报表分组目录
+- P1：合计行、简单交叉表（pivot 配置）、点列头排序、SQL 层分页翻页
+- P2：真 .xlsx 导出、报表 token 鉴权、systemd/Docker 化、报表分组目录
 
 ## [v0.1] - 2026-09-02
 

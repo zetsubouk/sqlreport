@@ -1,6 +1,6 @@
 # SQL 报表工具 — 功能总结与开发计划
 
-版本：v0.1（2026-09-02）｜技术栈：Python 3 标准库（http.server / sqlite3），无框架依赖
+版本：v0.2（2026-09-02）｜技术栈：Python 3 标准库（http.server / sqlite3），无框架依赖
 
 ---
 
@@ -8,16 +8,18 @@
 
 ```
 sqlreport/
-├── server.py            # 全部后端逻辑（单文件 ~330 行）
-│   ├── 数据层：connect() 懒加载数据源驱动（sqlite3 标准库 / pymysql / pyodbc）
-│   ├── 参数层：build_values() 校验参数值 → esc() 转义 → substitute() 占位符替换
-│   │          规则：{{id}} 普通参数；{{id.begin}}/{{id.end}} 日期范围；{{id.min}}/{{id.max}} 数字范围
-│   │          未填的占位符所在整行丢弃（实现可选 WHERE 条件）
-│   ├── HTTP层：BaseHTTPRequestHandler 路由分发
-│   └── 视图层：PAGE 模板字符串内联 HTML/CSS/JS（无前端框架）
-├── datasources.json     # 数据源配置（"_"前缀条目隐藏，仅作连接模板）
+├── server.py            # 路由 + 视图层（页面模板内联 HTML/CSS/JS）
+│   ├── 管理保护：_check_admin()（admin_password 空=仅本机 / 非空=HTTP Basic）
+│   ├── 数据源管理：/datasources 列表/表单/保存/测试/开关/删除
+│   └── 报表编排：_execute_report()（归一化→替换→缓存→各数据集查询→合并→截断）
+├── db.py                # 数据层：DatasourceStore（mtime 懒加载+原子写）/ connect(超时)
+│   │                    #           run_query(fetchmany 分批+10万行硬顶) / sql_is_readonly
+│   │                    #           merge_union / merge_lookup / QueryCache(TTL+LRU)
+├── params.py            # 参数层：esc/build_values/substitute + normalize_report（双格式归一化）
+├── config.json          # 全局配置（gitignore）：admin_password 空=管理页仅本机
+├── datasources.json     # 数据源配置（"_"前缀或 enabled:false=禁用；密码不入库）
 ├── reports/*.json       # 报表定义，一文件一报表（天然对应独立 URL）
-└── demo.db              # 演示数据（SQLite）
+└── demo.db              # 演示数据（SQLite，orders + customers）
 ```
 
 ### 路由清单
@@ -25,18 +27,24 @@ sqlreport/
 | 路由 | 方法 | 功能 |
 |------|------|------|
 | `/` | GET | 报表列表（含独立URL与编辑入口） |
-| `/new` `/edit/{id}` | GET | 报表编辑器（SQL+参数控件动态增删） |
-| `/r/{id}` | GET | 报表访问页：参数表单 + 异步查询 + 导出按钮 |
-| `/r/{id}/export` | GET | Excel 导出（HTML-Excel 方案，.xls） |
-| `/q/{id}` | POST | 查询接口（表单参数 → JSON 列/行） |
-| `/save` | POST | 保存报表定义（保存前试编译校验占位符） |
+| `/new` `/edit/{id}` | GET | 报表编辑器（多数据集增删 + 参数控件动态增删 + 缓存秒数） |
+| `/r/{id}` | GET | 报表访问页：参数表单 + 异步查询（loading/缓存/截断提示）+ 导出按钮 |
+| `/r/{id}/export` | GET | Excel 导出（HTML-Excel 方案，.xls，对合并后最终结果生效） |
+| `/q/{id}` | POST | 查询接口（响应 `{columns, rows, truncated, cached, elapsed_ms}`） |
+| `/save` | POST | 保存报表定义（试编译校验 + 原子写 + 清该报表缓存） |
+| `/preview` | POST | 编辑器单数据集试运行（前 20 行） |
+| `/datasources` `/datasources/new` `/datasources/edit/{name}` | GET | 数据源管理页（仅本机/Basic） |
+| `/datasources/save` `/test` `/toggle` `/delete` | POST | 数据源保存/连接测试/启用禁用/删除（引用检查二次确认） |
 
-### 已实现能力（对应最初 4 条需求）
+### 已实现能力
 
-1. ✅ 多数据源连接：MySQL / SQLServer / SQLite，SQL 脚本直接取数
+1. ✅ 多数据源连接：MySQL / SQLServer / SQLite（超时可控），Web 界面管理免重启 ✅ v0.2
 2. ✅ 表格报表：查询结果表格渲染（含中文列别名）；多级表头/交叉表未做
-3. ✅ 每报表独立查询条件：文本/下拉/日期/日期范围/数字/数字范围 6 种控件
+3. ✅ 每报表独立查询条件：6 种参数控件
 4. ✅ 独立 URL 发布：`/r/<id>` 免登录直接访问
+5. ✅ 跨源联合查询：多数据集 union（列名对齐）/ lookup（哈希 left join）✅ v0.2
+6. ✅ 大数据量稳定：fetch 10 万行硬顶 + timeout + 只读校验 + max_rows 截断提示 ✅ v0.2
+7. ✅ TTL 结果缓存（报表级 cache_ttl，保存即失效）+ 查询 loading 态 ✅ v0.2
 
 ### 设计决策记录
 
@@ -80,14 +88,14 @@ sqlreport/
 
 **P1-3 排序 + P1-4 分页**
 - 排序：纯前端，点列头对已加载数据排序（≤1 万行场景够用）
-- 分页：报表 JSON `"max_rows": 5000`（默认 2000），超限截断并提示「结果超 N 行已截断，请缩小条件」；SQLServer 用 OFFSET/FETCH，MySQL/SQLite 用 LIMIT
+- 分页：报表 JSON `"max_rows"`（默认 2000）超限截断并提示 ✅ v0.2；SQL 层翻页（OFFSET/FETCH / LIMIT）视真实痛点再上（用户已拍板本轮不做）
 
 ### P2 — 交付加固（~3 天，对外交付前必做）
 
-**P2-1 查询超时与只读保护**
-- 每数据源配置 `"timeout": 30`（秒）：pymysql `connect_timeout`+`read_timeout`，pyodbc `cnxn.timeout`
+**P2-1 查询超时与只读保护** ✅ v0.2（T01 落地）
+- 每数据源配置 `"timeout": 30`（秒）：pymysql `connect_timeout`+`read_timeout`，pyodbc `cnxn.timeout`，sqlite 本地锁等待 5s
 - SQL 拦截：去注释后首词必须为 SELECT/WITH；含 `;` 多语句直接拒绝；与只读账号形成双保险
-- 查询行数硬上限（防 SELECT * 大表拖垮服务）
+- 查询行数硬上限：单数据集 fetch 10 万行（fetchmany 分批）
 
 **P2-2 报表 token 鉴权（可选开关）**
 - `config.json`：`{"auth": "off|token", "token_secret": "..."}`
@@ -117,8 +125,8 @@ sqlreport/
 | pyodbc 客户环境安装失败（ODBC 依赖） | P0 最先验证；备选 pymssql 或容器内置 ODBC 驱动 |
 | 整行丢弃规则被误用（条件跨多行） | 编辑器占位符说明 + 保存时对可疑写法警告 |
 | 大结果集拖垮服务 | max_rows + timeout + 只读账号三重防护 |
-| datasources.json 含密码入库 | P0-3 拆 example/真实文件；config.json 一并 gitignore |
-| 单文件 server.py 膨胀 | 超 800 行拆 db.py/params.py/views.py，路由不变，对外零影响 |
+| datasources.json 含密码入库 | ✅ v0.2：config.json 已 gitignore；管理页密码不回显、留空不修改 |
+| 单文件 server.py 膨胀 | ✅ v0.2 已拆 db.py/params.py，路由不变，对外零影响 |
 
 ## 四、节奏
 
