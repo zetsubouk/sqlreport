@@ -149,6 +149,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._query(path[3:], self._flat(self._body()))
             if path == "/save":
                 return self._save(self._body())
+            if path == "/preview":
+                return self._preview(self._body())
             if path.startswith("/datasources/"):
                 if not self._check_admin():
                     return
@@ -187,24 +189,79 @@ class Handler(BaseHTTPRequestHandler):
         r = {"name": "", "ds": "", "sql": "", "params": []}
         if rid:
             r = load_json(os.path.join(REPORTS_DIR, rid + ".json"))
-        dss = [k for k in load_json(DS_FILE) if not k.startswith("_")]
-        opts = "".join(f'<option{" selected" if r["ds"]==k else ""}>{k}</option>' for k in dss)
+        dss = DS_STORE.visible_names()
+        # 双格式兼容：旧 {ds, sql} 视为单个数据集 main 编辑，保存时自动写回旧格式
+        datasets = r.get("datasets") or [{"name": "main", "ds": r.get("ds", ""), "sql": r.get("sql", "")}]
+        merge = r.get("merge") or {"mode": "union"}
         body = f"""<h1>报表编辑器</h1>
 <form onsubmit="save(event)">
 <div class="fields">
 <div><label>报表名称</label><input id="rname" size="30" value="{r['name']}">
- <label>数据源</label><select id="rds">{opts}</select></div>
-<div><textarea id="rsql" rows="10" placeholder="SELECT ... WHERE dt BETWEEN '{{{{dt.begin}}}}' AND '{{{{dt.end}}}}'">{r['sql']}</textarea>
-<p style="font-size:12px;color:#888">占位符：普通参数 {{{{id}}}}；日期范围自动展开 {{{{id.begin}}}}/{{{{id.end}}}}；数字范围 {{{{id.min}}}}/{{{{id.max}}}}</p></div>
+<label>缓存秒数</label><input id="rcache" size="5" value="{r.get('cache_ttl', 0)}" title="0=实时，每次直查数据库">
+<span style="font-size:12px;color:#888">0=实时</span></div>
 </div>
-<h2>查询参数（留空则无条件）</h2>
+<h2>数据集（≥2 个可配置合并方式；参数全局共享）</h2>
+<div id="dlist"></div>
+<div class="bar"><button type="button" onclick="addDs()">＋加数据集</button></div>
+<div id="mrow" style="display:none"><b>合并方式：</b>
+<select id="mmode" onchange="updMerge()"><option value="union">纵向合并 union</option><option value="lookup">横向关联 lookup</option></select>
+<span id="lookupcfg" style="display:none">
+主数据集 <select id="mbase"></select> 关联 <select id="mwith"></select>
+关联键 <input id="mon" size="15" placeholder="列名,可多列"> 取值列 <input id="mcols" size="15" placeholder="留空=除键外全部">
+</span></div>
+<h2>查询参数（所有数据集共享；留空则无条件）</h2>
 <div id="plist"></div>
 <div class="bar"><button type="button" onclick="addp()">＋加参数</button><button>保存并生成URL</button><span id="status"></span></div>
 </form>"""
         script = """
-let params = %s;
+let params = %(params)s;
+let datasets = %(datasets)s;
+const DSS = %(dss)s;
+const MERGE = %(merge)s;
 const TYPES = {text:'文本', select:'下拉', date:'日期', daterange:'日期范围', number:'数字', numrange:'数字范围'};
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')}
+function dsOpts(sel){return DSS.map(k=>`<option value="${esc(k)}"${k===sel?' selected':''}>${esc(k)}</option>`).join('')}
+function addDs(d){d = d || {name:'', ds:DSS[0]||'', sql:''};
+  const div = document.createElement('div');
+  div.style.cssText = 'border:1px solid #ddd;border-radius:4px;padding:8px;margin:8px 0;background:#fff';
+  div.innerHTML = `<div><input class="dname" placeholder="数据集名(唯一)" value="${esc(d.name)}" size="12">
+    <label>数据源</label><select class="dds">${dsOpts(d.ds)}</select>
+    <button type="button" onclick="pv(this)">试运行</button>
+    <button type="button" onclick="rmDs(this)">删数据集</button></div>
+    <textarea class="dsql" rows="5" placeholder="SELECT ... WHERE dt BETWEEN '{{dt.begin}}' AND '{{dt.end}}'">${esc(d.sql)}</textarea>
+    <div class="pv" style="font-size:12px"></div>`;
+  document.getElementById('dlist').appendChild(div);updMerge();}
+function rmDs(btn){btn.closest('#dlist > div').remove();updMerge();}
+function collectDs(){return [...document.querySelectorAll('#dlist > div')].map(d=>({
+  name:d.querySelector('.dname').value.trim()||'main',
+  ds:d.querySelector('.dds').value,
+  sql:d.querySelector('.dsql').value}));}
+function fillSel(id, names, val){document.getElementById(id).innerHTML =
+  names.map(n=>`<option${n===val?' selected':''}>${esc(n)}</option>`).join('');}
+function updMerge(){const ds=collectDs();const two=ds.length>=2;
+  document.getElementById('mrow').style.display = two?'':'none';
+  if(!two)return;
+  document.getElementById('lookupcfg').style.display = document.getElementById('mmode').value==='lookup'?'':'none';
+  fillSel('mbase', ds.map(d=>d.name), MERGE.base||ds[0].name);
+  fillSel('mwith', ds.map(d=>d.name), MERGE.with||ds[1].name);}
+function collectMerge(){const ds=collectDs();if(ds.length<2)return null;
+  const m={mode:document.getElementById('mmode').value};
+  if(m.mode==='lookup'){
+    m.base=document.getElementById('mbase').value;
+    m.with=document.getElementById('mwith').value;
+    m.on=document.getElementById('mon').value.split(',').map(s=>s.trim()).filter(Boolean);
+    const cols=document.getElementById('mcols').value.split(',').map(s=>s.trim()).filter(Boolean);
+    if(cols.length)m.cols=cols;}
+  return m;}
+async function pv(btn){const block=btn.closest('#dlist > div');const out=block.querySelector('.pv');
+  out.textContent='试运行中…';
+  const res = await fetch('/preview',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ds:block.querySelector('.dds').value,sql:block.querySelector('.dsql').value,params:collect()})});
+  const j = await res.json();
+  if(j.error){out.innerHTML='<span style="color:#a32d2d">失败:'+esc(j.error)+'</span>';return;}
+  let h = '试运行前 '+j.rows.length+' 行'+(j.truncated?'（已截断）':'')+'：<table><tr>'+j.columns.map(c=>'<th>'+esc(c)+'</th>').join('')+'</tr>';
+  h += j.rows.map(r=>'<tr>'+r.map(v=>'<td>'+esc(v)+'</td>').join('')+'</tr>').join('')+'</table>';
+  out.innerHTML = h;}
 function addp(p){p = p || {id:'',label:'',type:'text',options:'',default:''};
   const d = document.createElement('div');
   d.innerHTML = `<input placeholder="参数id" value="${esc(p.id)}" oninput="upd(this,0,'id')">
@@ -218,11 +275,21 @@ function upd(el,idx,key){params[idx]=params[idx]||{};params[idx][key]=el.value;}
 function collect(){const ds=[...document.querySelectorAll('#plist > div')];return ds.map((d,i)=>({id:d.querySelector('input').value,label:d.querySelectorAll('input')[1].value,type:d.querySelector('select').value,options:d.querySelectorAll('input')[2].value,default:d.querySelectorAll('input')[3].value})).filter(p=>p.id);}
 async function save(e){e.preventDefault();
   const res = await fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({id:%s,name:document.getElementById('rname').value,ds:document.getElementById('rds').value,sql:document.getElementById('rsql').value,params:collect()})});
+    body:JSON.stringify({id:%(rid)s,name:document.getElementById('rname').value,
+      cache_ttl:parseInt(document.getElementById('rcache').value)||0,
+      params:collect(),datasets:collectDs(),merge:collectMerge()})});
   const j = await res.json();
   document.getElementById('status').textContent = j.error ? ('失败:'+j.error) : ('已保存，独立URL: /r/'+j.id);}
+document.getElementById('mmode').value = MERGE.mode || 'union';
+document.getElementById('mon').value = (MERGE.on||[]).join(',');
+document.getElementById('mcols').value = (MERGE.cols||[]).join(',');
+datasets.forEach(d=>addDs(d));
 params.forEach((p,i)=>addp(p));
-""" % (json.dumps(r["params"], ensure_ascii=False), json.dumps(rid) if rid else "null")
+""" % {"params": json.dumps(r["params"], ensure_ascii=False),
+       "datasets": json.dumps(datasets, ensure_ascii=False),
+       "dss": json.dumps(dss),
+       "merge": json.dumps(merge, ensure_ascii=False),
+       "rid": json.dumps(rid) if rid else "null"}
         self._send(page("编辑报表", body, script))
 
     # ---- 数据源管理 ----
@@ -521,6 +588,21 @@ if(Object.keys(new FormData(document.getElementById('ff')).getAll('')).length||%
             return self._send(json.dumps({"error": str(e)}, ensure_ascii=False),
                               "application/json; charset=utf-8")
         self._send(json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8")
+
+    def _preview(self, data):
+        """编辑器单数据集试运行：用参数默认值替换后执行，返回前 20 行（复用 run_query 限流）。"""
+        try:
+            ds = (data.get("ds") or "").strip()
+            if ds not in DS_STORE.visible_names():
+                raise ValueError(f"数据源不存在或已禁用: {ds or '(空)'}")
+            params = data.get("params", [])
+            values = build_values("", params, {p.get("id", ""): p.get("default", "") for p in params})
+            sql = substitute(data.get("sql", ""), values)
+            cols, rows, tr = run_query(ds, sql)
+        except Exception as e:
+            return self._send(*self._json_res({"error": str(e)}))
+        result = {"columns": cols, "rows": rows[:20], "truncated": tr or len(rows) > 20}
+        self._send(*self._json_res(result))
 
     def _export(self, rid, args):
         r = self._load_report(rid)
