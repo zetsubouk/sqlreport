@@ -2,6 +2,8 @@
 
 版本：v0.1（2026-09-02）｜技术栈：Python 3 标准库（http.server / sqlite3），无框架依赖
 
+---
+
 ## 一、当前架构
 
 ```
@@ -32,7 +34,7 @@ sqlreport/
 ### 已实现能力（对应最初 4 条需求）
 
 1. ✅ 多数据源连接：MySQL / SQLServer / SQLite，SQL 脚本直接取数
-2. ✅ 表格报表：查询结果表格渲染（含中文列别名）；多级表头/交叉表未做（按需求砍掉）
+2. ✅ 表格报表：查询结果表格渲染（含中文列别名）；多级表头/交叉表未做
 3. ✅ 每报表独立查询条件：文本/下拉/日期/日期范围/数字/数字范围 6 种控件
 4. ✅ 独立 URL 发布：`/r/<id>` 免登录直接访问
 
@@ -44,36 +46,80 @@ sqlreport/
 - **无登录**：按需求用户只读；公网部署时靠 URL 不公开 + 反向代理层加鉴权兜底
 - **可选条件 = 整行丢弃**：SQL 中含未填占位符的行直接移除，写法简单但要求条件独立成行
 
-## 二、开发计划
+---
 
-### P0 — 数据接入补全（让工具真正可用于客户环境）
-| 事项 | 说明 | 预估 |
-|------|------|------|
-| 真库连通测试 | 用客户 MySQL/SQLServer 实测 pymysql/pyodbc 路径，处理字符集/日期类型返回 | 0.5 天 |
-| SQLServer 驱动方案 | macOS 上 pyodbc 依赖 unixODBC，需明确部署机（Windows/Linux）安装步骤 | 0.5 天 |
-| 列类型保留 | 数值列不再转字符串，前端/导出右对齐+千分位 | 0.5 天 |
+## 二、开发方案（详细设计）
 
-### P1 — 报表体验（用户侧增强）
-| 事项 | 说明 | 预估 |
-|------|------|------|
-| 合计行 | 报表配置 `total: [列名]`，查询结果自动追加合计 | 0.5 天 |
-| 简单交叉表 | 配置 `pivot: {row, col, value, agg}`，后端透视后输出 | 1~2 天 |
-| 排序 | 点击列头排序（前端即可） | 0.5 天 |
-| 分页/行数上限 | 大结果集默认 LIMIT + 提示 | 0.5 天 |
+### P0 — 数据接入补全（1.5 天，客户环境可用前提）
 
-### P2 — 运维与安全（对外交付前必做）
-| 事项 | 说明 | 预估 |
-|------|------|------|
-| 查询超时与只读保护 | cursor timeout + SQL 拦截非 SELECT 开头语句 | 0.5 天 |
-| 访问鉴权（可选） | 报表级 token：`/r/<id>?t=xxx`，公网部署用 | 0.5 天 |
-| 真正 .xlsx 导出 | openpyxl 或手写最小 xlsx（zip+XML，仍可保持零依赖） | 1 天 |
-| systemd / Docker 化 | 部署到客户 Linux 服务器或 NAS | 0.5 天 |
-| 报表分组目录 | reports/ 支持子目录，URL `/r/分组/id` | 0.5 天 |
+**P0-1 真库连通测试**
+- MySQL：pymysql 连接参数 charset=utf8mb4；验证 DATE/DATETIME/DECIMAL 返回值在表格与导出中的显示
+- SQLServer：pyodbc；Linux 部署机用 Microsoft 官方 ODBC Driver 18（`msodbcsql18`），安装步骤写入 README；Windows 部署机用自带 ODBC Driver 17
+- 验收标准：客户真实库跑通 1 张带日期范围+下拉条件的报表，导出 Excel 中文列名正常
 
-### 暂不做（明确边界）
-- 拖拽式报表设计器、多级不规则表头、打印套打 —— 复杂表样需求出现时用 Excel 导出兜底
-- 用户体系/多角色权限 —— 当前单管理员模式够用
-- 定时任务/订阅推送 —— 出现明确需求再加
+**P0-2 列类型保留**
+- 现状：所有值 `str()` 转字符串。改造：`run_query` 返回原始类型 + 列类型标记（`cursor.description` type_code 映射为 num/date/str）
+- 前端：数值列右对齐 + 千分位（`toLocaleString`），日期列原样
+- 导出：HTML 单元格加 `mso-number-format`，Excel 中为真数值
+- 报表 JSON 增加可选 `columns: [{"name":"金额","type":"num","format":"#,##0.00"}]` 覆盖自动探测
 
-### 建议节奏
-P0 一次做完（合计 1.5 天）→ 拿真实库出 1~2 张客户报表验证 → 按客户反馈从 P1/P2 挑做。
+**P0-3 配置安全**
+- `datasources.json` 改为 `datasources.example.json`（占位密码）入库，真实配置 gitignore
+- `.gitignore` 增补 `config.json`（P2-2 的密钥文件同步排除）
+
+### P1 — 报表体验（~3 天，用户侧增强）
+
+**P1-1 合计行**
+- 报表 JSON：`"total": {"label_col": "区域", "cols": ["金额"], "position": "bottom"}`
+- 实现：查询接口内对数值列 sum，追加一行「合计」；导出同步
+
+**P1-2 简单交叉表（pivot）**
+- 报表 JSON：`"pivot": {"row": "区域", "col": "产品", "value": "金额", "agg": "sum", "row_total": true, "col_total": true}`
+- 实现：SQL 只出 row/col/value 三列明细，Python dict 透视，列头按值排序；agg 支持 sum/count/avg
+- 边界：列头去重后 >50 列时拒绝执行，提示在 SQL 层先归类
+
+**P1-3 排序 + P1-4 分页**
+- 排序：纯前端，点列头对已加载数据排序（≤1 万行场景够用）
+- 分页：报表 JSON `"max_rows": 5000`（默认 2000），超限截断并提示「结果超 N 行已截断，请缩小条件」；SQLServer 用 OFFSET/FETCH，MySQL/SQLite 用 LIMIT
+
+### P2 — 交付加固（~3 天，对外交付前必做）
+
+**P2-1 查询超时与只读保护**
+- 每数据源配置 `"timeout": 30`（秒）：pymysql `connect_timeout`+`read_timeout`，pyodbc `cnxn.timeout`
+- SQL 拦截：去注释后首词必须为 SELECT/WITH；含 `;` 多语句直接拒绝；与只读账号形成双保险
+- 查询行数硬上限（防 SELECT * 大表拖垮服务）
+
+**P2-2 报表 token 鉴权（可选开关）**
+- `config.json`：`{"auth": "off|token", "token_secret": "..."}`
+- token 模式：访问 `/r/<id>` 需 `?t=HMAC(secret, id+date)`；编辑器生成带 token 的分享链接；`off` 行为同现在（内网直用）
+
+**P2-3 真 .xlsx 导出**
+- 首选：手写最小 xlsx（zip + Sheet1.xml，字符串 inlineStr，数值 `t="n"`），保持零依赖
+- 若超 1 天未通过兼容验证，降级引 openpyxl，DEVLOG 记录决策
+
+**P2-4 部署**
+- 环境A 客户 Linux：systemd unit（`ExecStart=python3 /opt/sqlreport/server.py`）
+- 环境B NAS Docker：python:3.13-slim 基础镜像，volume 挂载 `reports/` + `datasources.json`；出 base 与 mssql（含 ODBC 驱动层）两个 tag
+- README 补部署章节与 systemd unit / Dockerfile 样例
+
+**P2-5 报表分组目录**
+- `reports/<分组>/<id>.json`，URL `/r/<分组>/<id>`；列表页按分组折叠；兼容根目录报表
+
+### P3 — 候选池（有明确需求才启动，不排期）
+下拉选项来自 SQL（options_sql）｜导出多 Sheet｜定时快照对比｜查询审计日志｜简单图表（内联 ECharts）
+
+---
+
+## 三、风险与对策
+
+| 风险 | 对策 |
+|------|------|
+| pyodbc 客户环境安装失败（ODBC 依赖） | P0 最先验证；备选 pymssql 或容器内置 ODBC 驱动 |
+| 整行丢弃规则被误用（条件跨多行） | 编辑器占位符说明 + 保存时对可疑写法警告 |
+| 大结果集拖垮服务 | max_rows + timeout + 只读账号三重防护 |
+| datasources.json 含密码入库 | P0-3 拆 example/真实文件；config.json 一并 gitignore |
+| 单文件 server.py 膨胀 | 超 800 行拆 db.py/params.py/views.py，路由不变，对外零影响 |
+
+## 四、节奏
+
+P0（1.5 天）→ 客户真实库出 1~2 张报表验证 → P1/P2 按反馈挑做 → v1.0 对外交付（P2 完成 + CHANGELOG 定版）。
