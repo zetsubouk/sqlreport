@@ -3,11 +3,11 @@
 Python 标准库实现；MySQL/SQLServer 驱动按需懒加载（pymysql / pyodbc）。
 运行: python3 server.py [端口]  默认 8765
 """
-import json, os, re, sys, urllib.parse
+import json, os, re, sys, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from db import DS_FILE, load_json  # 数据层（v0.2 拆分，见 docs/DESIGN-v0.2.md）
-from params import build_values, substitute
+from db import DS_FILE, DS_STORE, load_json, run_query, merge_union, merge_lookup
+from params import build_values, substitute, normalize_report
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 REPORTS_DIR = os.path.join(BASE, "reports")
@@ -119,7 +119,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 r = load_json(os.path.join(REPORTS_DIR, fn))
                 rid = fn[:-5]
-                rows += f'<tr><td>{r.get("name", rid)}</td><td>{rid}</td><td>{r.get("ds","")}</td><td><a href="/r/{rid}">打开</a> <a href="/edit/{rid}">编辑</a></td></tr>'
+                ds_txt = r.get("ds") or f"多数据集×{len(r.get('datasets', []))}"
+                rows += f'<tr><td>{r.get("name", rid)}</td><td>{rid}</td><td>{ds_txt}</td><td><a href="/r/{rid}">打开</a> <a href="/edit/{rid}">编辑</a></td></tr>'
             except Exception:
                 pass
         body = f"""<h1>SQL 报表</h1>
@@ -210,7 +211,9 @@ async function run(){const res = await fetch('/q/%s',{method:'POST',headers:{'Co
   body:new URLSearchParams(new FormData(document.getElementById('ff')))});
   const j = await res.json();
   if(j.error){document.getElementById('out').innerHTML='<div class="err">'+j.error+'</div>';return;}
-  let h = '<p id="status">'+j.rows.length+' 行</p><table><tr>'+j.columns.map(c=>'<th>'+c+'</th>').join('')+'</tr>';
+  let st = j.rows.length+' 行 · '+j.elapsed_ms+'ms'+(j.cached?' · 缓存':'');
+  if(j.truncated) st += ' · <span style="color:#a32d2d">结果超限已截断，请缩小条件</span>';
+  let h = '<p id="status">'+st+'</p><table><tr>'+j.columns.map(c=>'<th>'+c+'</th>').join('')+'</tr>';
   h += j.rows.map(r=>'<tr>'+r.map(v=>'<td>'+v+'</td>').join('')+'</tr>').join('')+'</table>';
   document.getElementById('out').innerHTML = h;}
 document.getElementById('ff').addEventListener('submit',e=>{e.preventDefault();run();});
@@ -222,30 +225,93 @@ if(Object.keys(new FormData(document.getElementById('ff')).getAll('')).length||%
     def _save(self, data):
         rid = (data.get("id") or re.sub(r"\W+", "", data.get("name", "")) or "r1").lower()
         os.makedirs(REPORTS_DIR, exist_ok=True)
-        rec = {"name": data["name"], "ds": data["ds"], "sql": data["sql"], "params": data.get("params", [])}
-        # 保存前试编译：验证数据源存在、占位符可解析（用默认值空跑不执行）
-        values = build_values(rec["sql"], rec["params"], {p["id"]: p.get("default", "") for p in rec["params"]})
-        substitute(rec["sql"], values)
-        with open(os.path.join(REPORTS_DIR, rid + ".json"), "w", encoding="utf-8") as f:
+        rec = {"name": data["name"], "params": data.get("params", [])}
+        # 双格式兼容：归一化后仅 1 个数据集 → 写回旧 {ds, sql} 格式（旧文件 diff 稳定）；≥2 个才写 datasets
+        datasets = normalize_report(data, DS_STORE.visible_names())
+        if len(datasets) == 1:
+            rec["ds"], rec["sql"] = datasets[0]["ds"], datasets[0]["sql"]
+        else:
+            rec["datasets"] = datasets
+            rec["merge"] = data.get("merge") or {"mode": "union"}
+        # 保存前试编译：验证数据源存在、占位符可解析（用默认值空跑，不执行 SQL）
+        values = build_values("", rec["params"], {p["id"]: p.get("default", "") for p in rec["params"]})
+        for d in datasets:
+            substitute(d["sql"], values)
+        path = os.path.join(REPORTS_DIR, rid + ".json")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(rec, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)  # 原子写，防半写损坏
         self._send(json.dumps({"id": rid}), "application/json; charset=utf-8")
 
-    def _query(self, rid, given):
+    def _load_report(self, rid):
+        """读报表 JSON，不存在返回 None。"""
         path = os.path.join(REPORTS_DIR, rid + ".json")
         if not os.path.exists(path):
-            return self._send(json.dumps({"error": "报表不存在"}), "application/json; charset=utf-8")
-        r = load_json(path)
-        values = build_values(r["sql"], r.get("params", []), given)
-        cols, rows, _tr = run_query(r["ds"], substitute(r["sql"], values))
-        self._send(json.dumps({"columns": cols, "rows": rows}, ensure_ascii=False), "application/json; charset=utf-8")
+            return None
+        return load_json(path)
+
+    def _merge_results(self, r, datasets, results):
+        """按 merge 配置合并各数据集结果；单数据集直接透传。"""
+        if len(results) == 1:
+            return next(iter(results.values()))
+        merge = r.get("merge") or {}
+        mode = merge.get("mode", "union")
+        byname = {d["name"]: results[d["name"]] for d in datasets}
+        if mode == "lookup":
+            base = merge.get("base") or datasets[0]["name"]
+            with_ds = merge.get("with") or next((d["name"] for d in datasets if d["name"] != base), None)
+            if base not in byname or not with_ds or with_ds not in byname:
+                raise ValueError(f"lookup 配置的 base/with 数据集不存在: {base} / {with_ds}")
+            bcols, brows = byname[base]
+            wcols, wrows = byname[with_ds]
+            return merge_lookup(bcols, brows, wcols, wrows, merge.get("on") or [], merge.get("cols"))
+        if mode != "union":
+            raise ValueError(f"不支持的合并方式: {mode}")
+        return merge_union([byname[d["name"]] for d in datasets])
+
+    def _execute_report(self, rid, r, given):
+        """报表执行统一链路（/q 与 /export 共用）：
+        归一化 → 占位符替换 → 各数据集独立查询（各自限流）→ 合并 → max_rows 截断。
+        返回 {columns, rows, truncated, cached, elapsed_ms}。
+        """
+        t0 = time.time()
+        datasets = normalize_report(r, DS_STORE.visible_names())
+        values = build_values("", r.get("params", []), given)
+        results, fetch_truncated = {}, False
+        for d in datasets:
+            cols, rows, tr = run_query(d["ds"], substitute(d["sql"], values))
+            results[d["name"]] = (cols, rows)
+            fetch_truncated = fetch_truncated or tr
+        cols, rows = self._merge_results(r, datasets, results)
+        max_rows = int(r.get("max_rows") or 2000)
+        truncated = fetch_truncated or len(rows) > max_rows
+        if len(rows) > max_rows:
+            rows = rows[:max_rows]
+        return {"columns": cols, "rows": rows, "truncated": truncated,
+                "cached": False, "elapsed_ms": int((time.time() - t0) * 1000)}
+
+    def _query(self, rid, given):
+        r = self._load_report(rid)
+        if r is None:
+            return self._send(json.dumps({"error": "报表不存在"}, ensure_ascii=False),
+                              "application/json; charset=utf-8")
+        try:
+            result = self._execute_report(rid, r, given)
+        except Exception as e:
+            return self._send(json.dumps({"error": str(e)}, ensure_ascii=False),
+                              "application/json; charset=utf-8")
+        self._send(json.dumps(result, ensure_ascii=False), "application/json; charset=utf-8")
 
     def _export(self, rid, args):
-        path = os.path.join(REPORTS_DIR, rid + ".json")
-        if not os.path.exists(path):
+        r = self._load_report(rid)
+        if r is None:
             return self._err("报表不存在")
-        r = load_json(path)
-        values = build_values(r["sql"], r.get("params", []), args)
-        cols, rows, _tr = run_query(r["ds"], substitute(r["sql"], values))
+        try:
+            result = self._execute_report(rid, r, args)
+        except Exception as e:
+            return self._err(f"错误：{e}", 500)
+        cols, rows = result["columns"], result["rows"]
         h = "".join(f"<th>{c}</th>" for c in cols)
         b = "".join("<tr>" + "".join(f"<td>{v}</td>" for v in row) + "</tr>" for row in rows)
         xls = f'<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body><table border="1">{h}{b}</table></body></html>'

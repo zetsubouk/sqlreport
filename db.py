@@ -1,7 +1,7 @@
 """数据层：数据源存取（mtime 懒加载 + 原子写）/ 建连（超时）/ 查询（fetchmany 分批 + 行硬顶）
-/ 只读 SQL 校验 / TTL+LRU 查询缓存。
+/ 只读 SQL 校验 / 跨源合并引擎（union/lookup）/ TTL+LRU 查询缓存。
 
-设计依据 docs/DESIGN-v0.2.md §3.2/§3.3/§3.4；跨源合并引擎 merge_union/merge_lookup 随 T03 加入。
+设计依据 docs/DESIGN-v0.2.md §3.2/§3.3/§3.4。
 """
 import hashlib
 import json
@@ -17,6 +17,7 @@ DS_FILE = os.path.join(BASE, "datasources.json")
 REPORTS_DIR = os.path.join(BASE, "reports")
 
 MAX_ROWS_FETCH = 100_000   # 单数据集 fetch 硬顶（内存峰值预算 ~100MB，见 DESIGN §3.3）
+LOOKUP_RIGHT_MAX = 100_000  # lookup 右表（建 dict 侧）行数上限
 FETCH_BATCH = 1000         # fetchmany 批大小
 DEFAULT_TIMEOUT = 30       # 数据源缺省超时（秒）
 
@@ -214,6 +215,60 @@ def run_query(ds_name, sql, values=None):
         return cols, rows, truncated
     finally:
         conn.close()
+
+
+def merge_union(results):
+    """纵向合并（union）：以第一个数据集列序为基准，按列名对齐拼接，缺失列填 ""。
+
+    results: [(columns, rows), ...]；逐数据集流式转换，峰值内存 ≈ 最大单数据集行数。
+    """
+    if not results:
+        return [], []
+    base_cols = list(results[0][0])
+    idx0 = {c: i for i, c in enumerate(base_cols)}
+    merged = []
+    for cols, rows in results:
+        idx = {c: i for i, c in enumerate(cols)}
+        order = [(idx[c] if c in idx else None) for c in base_cols]
+        for r in rows:
+            merged.append(tuple("" if i is None else r[i] for i in order))
+    return base_cols, merged
+
+
+def merge_lookup(base_cols, base_rows, right_cols, right_rows, on, cols=None):
+    """横向关联（lookup，类似 left join 取值）：右表建 dict 哈希，左表逐行 O(n) 查。
+
+    - on: 关联键列名（可多列）；cols: 从右表取的列（缺省 = 右表除键外全部列）
+    - 右表行数上限 LOOKUP_RIGHT_MAX，超限报错（提示 SQL 层先聚合/过滤）
+    - 右表重复键取首条（dict 后写不覆盖）
+    """
+    on = [k for k in (on or []) if k]
+    if not on:
+        raise ValueError("lookup 关联需要指定 on 关联键（可多列）")
+    if len(right_rows) > LOOKUP_RIGHT_MAX:
+        raise ValueError(f"关联表超 {LOOKUP_RIGHT_MAX} 行，请在 SQL 层先聚合/过滤")
+    bidx = {c: i for i, c in enumerate(base_cols)}
+    ridx = {c: i for i, c in enumerate(right_cols)}
+    for k in on:
+        if k not in bidx:
+            raise ValueError(f"主数据集缺少关联键列: {k}")
+        if k not in ridx:
+            raise ValueError(f"关联数据集缺少关联键列: {k}")
+    take = [c for c in (cols or [c for c in right_cols if c not in on]) if c]
+    for c in take:
+        if c not in ridx:
+            raise ValueError(f"关联数据集缺少取值列: {c}")
+    right_map = {}
+    for r in right_rows:
+        key = tuple(r[ridx[k]] for k in on)
+        if key not in right_map:
+            right_map[key] = tuple(r[ridx[c]] for c in take)
+    out_rows = []
+    pad = ("",) * len(take)
+    for r in base_rows:
+        vals = right_map.get(tuple(r[bidx[k]] for k in on), pad)
+        out_rows.append(tuple(r) + vals)
+    return base_cols + list(take), out_rows
 
 
 class QueryCache:
