@@ -493,15 +493,23 @@ updType();
 </div></form>
 <div id="out"><p style="color:#888">设置条件后点「查询」</p></div>"""
         script = """
-async function run(){const res = await fetch('/q/%s',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:new URLSearchParams(new FormData(document.getElementById('ff')))});
-  const j = await res.json();
-  if(j.error){document.getElementById('out').innerHTML='<div class="err">'+j.error+'</div>';return;}
-  let st = j.rows.length+' 行 · '+j.elapsed_ms+'ms'+(j.cached?' · 缓存':'');
-  if(j.truncated) st += ' · <span style="color:#a32d2d">结果超限已截断，请缩小条件</span>';
-  let h = '<p id="status">'+st+'</p><table><tr>'+j.columns.map(c=>'<th>'+c+'</th>').join('')+'</tr>';
-  h += j.rows.map(r=>'<tr>'+r.map(v=>'<td>'+v+'</td>').join('')+'</tr>').join('')+'</table>';
-  document.getElementById('out').innerHTML = h;}
+function escHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
+async function run(){
+  const btns = document.querySelectorAll('#ff button');
+  btns.forEach(b=>b.disabled=true);  // 加载态：禁用按钮防重复提交
+  document.getElementById('out').innerHTML = '<p style="color:#888">查询中，请稍候…</p>';
+  try{
+    const res = await fetch('/q/%s',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:new URLSearchParams(new FormData(document.getElementById('ff')))});
+    const j = await res.json();
+    if(j.error){document.getElementById('out').innerHTML='<div class="err">'+escHtml(j.error)+'</div>';return;}
+    let st = j.rows.length+' 行 · '+j.elapsed_ms+'ms'+(j.cached?' · 缓存命中':'');
+    if(j.truncated) st += ' · <span style="color:#a32d2d">结果超限已截断，请缩小条件</span>';
+    let h = '<p id="status">'+st+'</p><table><tr>'+j.columns.map(c=>'<th>'+escHtml(c)+'</th>').join('')+'</tr>';
+    h += j.rows.map(r=>'<tr>'+r.map(v=>'<td>'+escHtml(v)+'</td>').join('')+'</tr>').join('')+'</table>';
+    document.getElementById('out').innerHTML = h;
+  } finally { btns.forEach(b=>b.disabled=false); }
+}
 document.getElementById('ff').addEventListener('submit',e=>{e.preventDefault();run();});
 if(Object.keys(new FormData(document.getElementById('ff')).getAll('')).length||%s)run();
 """ % (rid, "true" if args else "false")
@@ -528,6 +536,7 @@ if(Object.keys(new FormData(document.getElementById('ff')).getAll('')).length||%
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(rec, f, ensure_ascii=False, indent=2)
         os.replace(tmp, path)  # 原子写，防半写损坏
+        CACHE.invalidate(rid)  # 报表定义已变更，清空该报表全部缓存条目
         self._send(json.dumps({"id": rid}), "application/json; charset=utf-8")
 
     def _load_report(self, rid):
@@ -558,12 +567,21 @@ if(Object.keys(new FormData(document.getElementById('ff')).getAll('')).length||%
 
     def _execute_report(self, rid, r, given):
         """报表执行统一链路（/q 与 /export 共用）：
-        归一化 → 占位符替换 → 各数据集独立查询（各自限流）→ 合并 → max_rows 截断。
+        归一化 → 占位符替换 → 缓存查询（cache_ttl>0 时）→ 各数据集独立查询（各自限流）
+        → 合并 → max_rows 截断 → 回填缓存。
         返回 {columns, rows, truncated, cached, elapsed_ms}。
         """
         t0 = time.time()
         datasets = normalize_report(r, DS_STORE.visible_names())
         values = build_values("", r.get("params", []), given)
+        ttl = int(r.get("cache_ttl") or 0)  # 0 = 不缓存（实时）
+        key = CACHE.make_key(rid, values) if ttl > 0 else None
+        if key:
+            hit = CACHE.get(key)
+            if hit:
+                cols, rows = hit
+                return {"columns": cols, "rows": rows, "truncated": False,
+                        "cached": True, "elapsed_ms": int((time.time() - t0) * 1000)}
         results, fetch_truncated = {}, False
         for d in datasets:
             cols, rows, tr = run_query(d["ds"], substitute(d["sql"], values))
@@ -574,6 +592,8 @@ if(Object.keys(new FormData(document.getElementById('ff')).getAll('')).length||%
         truncated = fetch_truncated or len(rows) > max_rows
         if len(rows) > max_rows:
             rows = rows[:max_rows]
+        if key:
+            CACHE.put(key, cols, rows, ttl)
         return {"columns": cols, "rows": rows, "truncated": truncated,
                 "cached": False, "elapsed_ms": int((time.time() - t0) * 1000)}
 
