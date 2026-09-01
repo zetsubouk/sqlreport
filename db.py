@@ -283,7 +283,7 @@ class QueryCache:
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._data = OrderedDict()  # key -> [expire_at, columns, rows]
+        self._data = OrderedDict()  # key -> [expire_at, columns, rows, truncated]
 
     def make_key(self, rid, values):
         """参数 canonical 化：sorted(values.items()) 后 JSON 序列化再 sha1。"""
@@ -291,25 +291,26 @@ class QueryCache:
         return f"{rid}:{hashlib.sha1(canonical.encode('utf-8')).hexdigest()}"
 
     def get(self, key):
-        """命中且未过期返回 (columns, rows) 并刷新 LRU 位置；否则删除过期条目返回 None。"""
+        """命中且未过期返回 (columns, rows, truncated) 并刷新 LRU 位置；否则删除过期条目返回 None。"""
         now = time.time()
         with self._lock:
             item = self._data.get(key)
             if item is None:
                 return None
-            expire_at, cols, rows = item
+            expire_at, cols, rows, truncated = item
             if now > expire_at:
                 del self._data[key]
                 return None
             self._data.move_to_end(key)
-            return cols, rows
+            return cols, rows, truncated
 
-    def put(self, key, columns, rows, ttl):
-        """写入缓存；ttl<=0 不缓存，单条目超限不缓存，超预算 LRU 驱逐。"""
+    def put(self, key, columns, rows, ttl, truncated=False):
+        """写入缓存；ttl<=0 不缓存，单条目超限不缓存，超预算 LRU 驱逐。
+        truncated 一并缓存，避免命中后误报「未截断」（对 DESIGN §3.4 的小幅补充）。"""
         if ttl <= 0 or len(rows) > self.MAX_ENTRY_ROWS:
             return
         with self._lock:
-            self._data[key] = (time.time() + ttl, columns, rows)
+            self._data[key] = (time.time() + ttl, columns, rows, truncated)
             self._data.move_to_end(key)
             total = sum(len(v[2]) for v in self._data.values())
             while total > self.MAX_TOTAL_ROWS and len(self._data) > 1:

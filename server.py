@@ -6,7 +6,7 @@ Python 标准库实现；MySQL/SQLServer 驱动按需懒加载（pymysql / pyodb
 import base64, json, os, re, sys, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from db import DS_FILE, DS_STORE, load_json, run_query, merge_union, merge_lookup
+from db import DS_STORE, load_json, run_query, merge_union, merge_lookup
 from params import build_values, substitute, normalize_report
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -519,7 +519,8 @@ if(Object.keys(new FormData(document.getElementById('ff')).getAll('')).length||%
     def _save(self, data):
         rid = (data.get("id") or re.sub(r"\W+", "", data.get("name", "")) or "r1").lower()
         os.makedirs(REPORTS_DIR, exist_ok=True)
-        rec = {"name": data["name"], "params": data.get("params", [])}
+        rec = {"name": data["name"], "params": data.get("params", []),
+               "cache_ttl": int(data.get("cache_ttl") or 0)}  # 0 = 实时（不缓存）
         # 双格式兼容：归一化后仅 1 个数据集 → 写回旧 {ds, sql} 格式（旧文件 diff 稳定）；≥2 个才写 datasets
         datasets = normalize_report(data, DS_STORE.visible_names())
         if len(datasets) == 1:
@@ -579,8 +580,8 @@ if(Object.keys(new FormData(document.getElementById('ff')).getAll('')).length||%
         if key:
             hit = CACHE.get(key)
             if hit:
-                cols, rows = hit
-                return {"columns": cols, "rows": rows, "truncated": False,
+                cols, rows, tr_hit = hit
+                return {"columns": cols, "rows": rows, "truncated": tr_hit,
                         "cached": True, "elapsed_ms": int((time.time() - t0) * 1000)}
         results, fetch_truncated = {}, False
         for d in datasets:
@@ -593,7 +594,7 @@ if(Object.keys(new FormData(document.getElementById('ff')).getAll('')).length||%
         if len(rows) > max_rows:
             rows = rows[:max_rows]
         if key:
-            CACHE.put(key, cols, rows, ttl)
+            CACHE.put(key, cols, rows, ttl, truncated)
         return {"columns": cols, "rows": rows, "truncated": truncated,
                 "cached": False, "elapsed_ms": int((time.time() - t0) * 1000)}
 
