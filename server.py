@@ -3,7 +3,7 @@
 Python 标准库实现；MySQL/SQLServer 驱动按需懒加载（pymysql / pyodbc）。
 运行: python3 server.py [端口]  默认 8765
 """
-import json, os, re, sys, time, urllib.parse
+import base64, json, os, re, sys, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from db import DS_FILE, DS_STORE, load_json, run_query, merge_union, merge_lookup
@@ -11,6 +11,14 @@ from params import build_values, substitute, normalize_report
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 REPORTS_DIR = os.path.join(BASE, "reports")
+CONFIG_FILE = os.path.join(BASE, "config.json")
+
+def load_config():
+    """全局配置（config.json，不入库）。缺省：auth=off，admin_password 空 → 管理页仅本机可访问。"""
+    try:
+        return load_json(CONFIG_FILE)
+    except Exception:
+        return {"auth": "off", "admin_password": ""}
 
 # ---------------- 页面模板 ----------------
 
@@ -76,6 +84,30 @@ class Handler(BaseHTTPRequestHandler):
     def _flat(qs_body):
         return {k: v[0] for k, v in qs_body.items()}
 
+    # ---- 管理页访问保护 ----
+    def _check_admin(self):
+        """config.json admin_password 非空 = HTTP Basic；为空 = 仅 127.0.0.1 可访问。"""
+        pwd = str(load_config().get("admin_password") or "").strip()
+        if pwd:
+            expected = "Basic " + base64.b64encode(f"admin:{pwd}".encode()).decode()
+            if self.headers.get("Authorization", "") == expected:
+                return True
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="sqlreport admin"')
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(page("需要认证", '<div class="err">需要管理员认证</div>'))
+            return False
+        remote = self.client_address[0]
+        if remote in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            return True
+        self._err("管理页仅允许本机（127.0.0.1）访问；如需远程管理请在服务端 config.json 配置 admin_password 启用 HTTP Basic", 403)
+        return False
+
+    @staticmethod
+    def _json_res(obj):
+        return json.dumps(obj, ensure_ascii=False), "application/json; charset=utf-8"
+
     # ---- GET ----
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
@@ -88,6 +120,17 @@ class Handler(BaseHTTPRequestHandler):
             m = re.match(r"^/edit/(\w+)$", path)
             if m:
                 return self._editor(m.group(1))
+            if path == "/datasources" or path.startswith("/datasources/"):
+                if not self._check_admin():
+                    return
+                if path == "/datasources":
+                    return self._ds_list()
+                if path == "/datasources/new":
+                    return self._ds_form(None)
+                m = re.match(r"^/datasources/edit/(.+)$", path)
+                if m:
+                    return self._ds_form(m.group(1))
+                return self._err("404")
             m = re.match(r"^/r/(\w+)$", path)
             if m:
                 return self._viewer(m.group(1), args)
@@ -106,6 +149,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._query(path[3:], self._flat(self._body()))
             if path == "/save":
                 return self._save(self._body())
+            if path.startswith("/datasources/"):
+                if not self._check_admin():
+                    return
+                if path == "/datasources/save":
+                    return self._ds_save(self._body())
+                if path == "/datasources/test":
+                    return self._ds_test(self._body())
+                if path == "/datasources/toggle":
+                    return self._ds_toggle(self._body())
+                if path == "/datasources/delete":
+                    return self._ds_delete(self._body())
+                return self._err("404")
             return self._err("404")
         except Exception as e:
             self._send(json.dumps({"error": str(e)}), "application/json; charset=utf-8")
@@ -169,6 +224,170 @@ async function save(e){e.preventDefault();
 params.forEach((p,i)=>addp(p));
 """ % (json.dumps(r["params"], ensure_ascii=False), json.dumps(rid) if rid else "null")
         self._send(page("编辑报表", body, script))
+
+    # ---- 数据源管理 ----
+    def _ds_list(self):
+        dss = DS_STORE.load()
+        rows = ""
+        for name in sorted(dss):
+            cfg = dss[name]
+            enabled = DS_STORE.is_enabled(name, cfg)
+            refs = DS_STORE.referenced_by(name)
+            conn = cfg.get("host") or cfg.get("path") or ""
+            if cfg.get("database"):
+                conn += "/" + str(cfg["database"])
+            nm = json.dumps(name, ensure_ascii=False)  # 防名称含引号破坏 JS
+            ops = (f'<a href="#" onclick="dsTest({nm},this)">测试</a> '
+                   f'<a href="/datasources/edit/{urllib.parse.quote(name)}">编辑</a> '
+                   f'<a href="#" onclick="dsToggle({nm},{str(not enabled).lower()})">{"禁用" if enabled else "启用"}</a> '
+                   f'<a href="#" onclick="dsDel({nm})">删除</a>')
+            rows += (f'<tr><td>{name}</td><td>{cfg.get("type", "")}</td><td>{conn}</td>'
+                     f'<td>{cfg.get("note", "")}</td><td>{"" if enabled else "禁用"}</td>'
+                     f'<td>{", ".join(refs) if refs else "—"}</td><td>{ops}</td></tr>')
+        body = f"""<h1>数据源管理</h1>
+        <div class="bar"><a href="/datasources/new">＋新建数据源</a><a href="/">返回报表列表</a>
+        <span style="font-size:12px;color:#888">改动免重启生效；密码不出现在本页</span></div>
+        <table><tr><th>名称</th><th>类型</th><th>地址/文件</th><th>备注</th><th>状态</th><th>被引用报表</th><th>操作</th></tr>{rows}</table>
+        <p style="font-size:12px;color:#888">禁用（或旧 `_` 前缀命名）的数据源对报表不可见；删除被引用的数据源需二次确认。</p>"""
+        script = """
+async function post(url, data){return fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});}
+async function dsTest(name, el){el.textContent='测试中…';
+  const j = await (await post('/datasources/test',{name})).json();
+  el.textContent = j.ok ? ('成功 '+j.ms+'ms') : ('失败:'+(j.error||'').slice(0,60));}
+async function dsToggle(name, en){await post('/datasources/toggle',{name,enabled:en});location.reload();}
+async function dsDel(name){
+  if(!confirm('确定删除数据源 '+name+' ？'))return;
+  const j = await (await post('/datasources/delete',{name})).json();
+  if(!j.error){location.reload();return;}
+  if(!j.referenced || !confirm('该数据源被以下报表引用：'+j.referenced.join('、')+'\\n删除后这些报表查询将报错，确定仍要删除？')){alert(j.error);return;}
+  await post('/datasources/delete',{name,force:true});location.reload();}
+"""
+        self._send(page("数据源管理", body, script))
+
+    def _ds_form(self, name):
+        editing = name is not None
+        cfg = (DS_STORE.get(name) or {}) if editing else {}
+        types = ["sqlite", "mysql", "sqlserver"]
+        topts = "".join(f'<option{" selected" if cfg.get("type") == t else ""}>{t}</option>' for t in types)
+        en = cfg.get("enabled", True)
+        body = f"""<h1>{'编辑数据源：' + name if editing else '新建数据源'}</h1>
+<form onsubmit="dssave(event)"><div class="fields">
+<div><label>名称</label><input id="dname" value="{name or ''}"{' disabled' if editing else ''}>
+<label>类型</label><select id="dtype" onchange="updType()">{topts}</select>
+<label>启用</label><input type="checkbox" id="denable"{' checked' if en else ''}></div>
+<div id="f_file"><label>SQLite 文件路径</label><input id="dpath" size="40" value="{cfg.get('path', '')}" placeholder="demo.db（相对服务目录）或绝对路径"></div>
+<div id="f_host"><label>主机</label><input id="dhost" value="{cfg.get('host', '')}">
+<label>端口</label><input id="dport" size="6" value="{cfg.get('port', '')}">
+<label>用户</label><input id="duser" value="{cfg.get('user', '')}">
+<label>密码</label><input id="dpwd" type="password" value="" placeholder="{'留空 = 不修改' if editing else ''}">
+<label>数据库</label><input id="ddb" value="{cfg.get('database', '')}"></div>
+<div><label>超时(秒)</label><input id="dtimeout" size="4" value="{cfg.get('timeout', 30)}">
+<label>备注</label><input id="dnote" size="30" value="{cfg.get('note', '')}"></div>
+</div>
+<div class="bar"><button>保存</button><button type="button" onclick="dstest()">测试连接</button>
+<span id="dst"></span><a href="/datasources">返回列表</a></div>
+</form>"""
+        script = """
+function updType(){const t=document.getElementById('dtype').value;
+  document.getElementById('f_file').style.display = t==='sqlite' ? '' : 'none';
+  document.getElementById('f_host').style.display = t==='sqlite' ? 'none' : '';}
+function collect(){const t=document.getElementById('dtype').value;
+  const c={name:document.getElementById('dname').value.trim(),type:t,
+    enabled:document.getElementById('denable').checked,
+    timeout:parseInt(document.getElementById('dtimeout').value)||30,
+    note:document.getElementById('dnote').value};
+  if(t==='sqlite'){c.path=document.getElementById('dpath').value.trim();}
+  else{c.host=document.getElementById('dhost').value.trim();
+    c.port=document.getElementById('dport').value.trim();
+    c.user=document.getElementById('duser').value;
+    c.password=document.getElementById('dpwd').value;
+    c.database=document.getElementById('ddb').value;}
+  return c;}
+async function dssave(e){e.preventDefault();
+  const res = await fetch('/datasources/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collect())});
+  const j = await res.json();
+  if(j.error){document.getElementById('dst').textContent='失败:'+j.error;return;}
+  location.href='/datasources';}
+async function dstest(){
+  document.getElementById('dst').textContent='连接中…';
+  const res = await fetch('/datasources/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collect())});
+  const j = await res.json();
+  document.getElementById('dst').textContent = j.ok ? ('连接成功 '+j.ms+'ms') : ('失败:'+(j.error||'').slice(0,80));}
+updType();
+"""
+        self._send(page("数据源表单", body, script))
+
+    def _ds_save(self, data):
+        try:
+            name = (data.get("name") or "").strip()
+            if not name:
+                raise ValueError("数据源名称不能为空")
+            t = data.get("type", "sqlite")
+            if t not in ("sqlite", "mysql", "sqlserver"):
+                raise ValueError(f"不支持的数据源类型: {t}")
+            old = DS_STORE.get(name) or {}
+            cfg = {"type": t}
+            if t == "sqlite":
+                cfg["path"] = (data.get("path") or "").strip()
+                if not cfg["path"]:
+                    raise ValueError("SQLite 数据源需要文件路径")
+            else:
+                cfg["host"] = (data.get("host") or "").strip()
+                if not cfg["host"]:
+                    raise ValueError("主机地址不能为空")
+                cfg["port"] = int(data.get("port") or (3306 if t == "mysql" else 1433))
+                cfg["user"] = data.get("user", "")
+                pwd = data.get("password") or ""
+                cfg["password"] = pwd if pwd else old.get("password", "")  # 留空 = 不修改
+                cfg["database"] = data.get("database", "")
+            cfg["timeout"] = int(data.get("timeout") or 30)
+            cfg["enabled"] = bool(data.get("enabled", True))
+            cfg["note"] = data.get("note", "")
+            DS_STORE.save(name, cfg)
+        except Exception as e:
+            return self._send(*self._json_res({"error": str(e)}))
+        self._send(*self._json_res({"ok": True, "name": name}))
+
+    def _ds_test(self, data):
+        """连接测试：仅建连不执行 SQL。列表页传 {name}（测已保存配置）；表单传完整字段（测未保存值）。"""
+        try:
+            if data.get("type"):
+                name = (data.get("name") or "").strip()
+                cfg = dict(data)
+                old = DS_STORE.get(name) or {} if name else {}
+                if not cfg.get("password") and old.get("password"):
+                    cfg["password"] = old["password"]  # 密码留空沿用已存密码
+                cfg["timeout"] = int(cfg.get("timeout") or 30)
+            else:
+                name = (data.get("name") or "").strip()
+                cfg = DS_STORE.get(name)
+                if cfg is None:
+                    raise ValueError(f"数据源不存在: {name}")
+            ok, ms, err = DS_STORE.test_connection(cfg)
+        except Exception as e:
+            ok, ms, err = False, 0, str(e)
+        self._send(*self._json_res({"ok": ok, "ms": ms, "error": err}))
+
+    def _ds_toggle(self, data):
+        try:
+            real = DS_STORE.toggle((data.get("name") or "").strip(), bool(data.get("enabled")))
+            self._send(*self._json_res({"ok": True, "name": real}))
+        except Exception as e:
+            self._send(*self._json_res({"error": str(e)}))
+
+    def _ds_delete(self, data):
+        name = (data.get("name") or "").strip()
+        try:
+            if not name:
+                raise ValueError("缺少数据源名称")
+            refs = DS_STORE.referenced_by(name)
+            if refs and not data.get("force"):
+                return self._send(*self._json_res(
+                    {"error": f"数据源被 {len(refs)} 张报表引用，删除后这些报表将无法查询", "referenced": refs}))
+            DS_STORE.delete(name)
+        except Exception as e:
+            return self._send(*self._json_res({"error": str(e)}))
+        self._send(*self._json_res({"ok": True}))
 
     def _param_form(self, r, given):
         html = ""
