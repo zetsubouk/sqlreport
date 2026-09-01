@@ -75,14 +75,18 @@ class Handler(BaseHTTPRequestHandler):
         return {k: v[0] for k, v in urllib.parse.parse_qs(q, keep_blank_values=True).items()}
 
     def _body(self):
+        """按 Content-Type 统一返回「字典」：form 取 parse_qs 的标量值（v[0]）；
+        JSON 原样返回（保留嵌套数组，供 /preview 的 params、/save 的 datasets 使用）。"""
         n = int(self.headers.get("Content-Length", 0))
-        return urllib.parse.parse_qs(self.rfile.read(n).decode("utf-8"), keep_blank_values=True) \
-            if self.headers.get("Content-Type", "").startswith("application/x-www-form-urlencoded") \
-            else json.loads(self.rfile.read(n) or b"{}")
+        if self.headers.get("Content-Type", "").startswith("application/x-www-form-urlencoded"):
+            qs = urllib.parse.parse_qs(self.rfile.read(n).decode("utf-8"), keep_blank_values=True)
+            return {k: v[0] for k, v in qs.items()}
+        return json.loads(self.rfile.read(n) or b"{}")
 
     @staticmethod
-    def _flat(qs_body):
-        return {k: v[0] for k, v in qs_body.items()}
+    def _flat(body):
+        """查询参数展平（仅 /q 使用）：标量原样返回，列表值取首元素（兼容 form 多值）。"""
+        return {k: (v[0] if isinstance(v, list) and v else v) for k, v in body.items()}
 
     # ---- 管理页访问保护 ----
     def _check_admin(self):
