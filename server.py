@@ -3,86 +3,14 @@
 Python 标准库实现；MySQL/SQLServer 驱动按需懒加载（pymysql / pyodbc）。
 运行: python3 server.py [端口]  默认 8765
 """
-import json, os, re, sqlite3, sys, urllib.parse
+import json, os, re, sys, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from db import DS_FILE, load_json  # 数据层（v0.2 拆分，见 docs/DESIGN-v0.2.md）
+from params import build_values, substitute
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 REPORTS_DIR = os.path.join(BASE, "reports")
-DS_FILE = os.path.join(BASE, "datasources.json")
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-NUM_RE = re.compile(r"^-?\d+(\.\d+)?$")
-PH_RE = re.compile(r"\{\{([\w.]+)\}\}")
-
-# ---------------- 数据访问 ----------------
-
-def load_json(path):
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
-
-def connect(ds_name):
-    dss = load_json(DS_FILE)
-    if ds_name not in dss or ds_name.startswith("_"):
-        raise ValueError(f"数据源不存在: {ds_name}")
-    ds = dss[ds_name]
-    t = ds["type"]
-    if t == "sqlite":
-        return sqlite3.connect(ds["path"])
-    if t == "mysql":
-        import pymysql
-        return pymysql.connect(host=ds["host"], port=int(ds.get("port", 3306)),
-                               user=ds["user"], password=ds["password"],
-                               database=ds["database"], charset="utf8mb4")
-    if t == "sqlserver":
-        import pyodbc
-        dsn = f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={ds['host']},{ds.get('port',1433)};DATABASE={ds['database']};UID={ds['user']};PWD={ds['password']}"
-        return pyodbc.connect(dsn)
-    raise ValueError(f"不支持的数据源类型: {t}")
-
-def esc(v):
-    """拼接前转义（工具面向可信 SQL 作者，仅防参数值注入）"""
-    s = str(v)
-    return s.replace("'", "''")
-
-def build_values(sql, params, given):
-    """按参数定义校验输入，返回 {占位符: 已转义值}"""
-    values = {}
-    for p in params:
-        pid = p["id"]
-        g = given.get(pid, "").strip() if isinstance(given.get(pid), str) else str(given.get(pid, ""))
-        t = p.get("type", "text")
-        if t in ("daterange", "numrange"):
-            g2 = given.get(pid + "_2", "").strip() if isinstance(given.get(pid + "_2"), str) else ""
-            a, b = ("_begin", "_end") if t == "daterange" else ("_min", "_max")
-            if g:
-                values[pid + a] = esc(g)
-                values[pid + "." + a[1:]] = esc(g)  # 同时支持 {{d_begin}} 与 {{d.begin}}
-            if g2:
-                values[pid + b] = esc(g2)
-                values[pid + "." + b[1:]] = esc(g2)
-        elif g != "":
-            values[pid] = esc(g)
-    return values
-
-def run_query(ds_name, sql, values):
-    conn = connect(ds_name)
-    try:
-        cur = conn.cursor()
-        cur.execute(sql, ())
-        cols = [d[0] for d in cur.description] if cur.description else []
-        rows = cur.fetchall()
-        return cols, [tuple("" if v is None else str(v) for v in r) for r in rows]
-    finally:
-        conn.close()
-
-def substitute(sql, values):
-    """已填参数直接替换；未填占位符所在整行丢弃（实现可选条件）"""
-    def rep(m):
-        k = m.group(1)
-        if k in values:
-            return values[k]
-        return "\x00DROP"
-    lines = [ln for ln in PH_RE.sub(rep, sql).splitlines() if "\x00DROP" not in ln]
-    return "\n".join(lines)
 
 # ---------------- 页面模板 ----------------
 
@@ -308,7 +236,7 @@ if(Object.keys(new FormData(document.getElementById('ff')).getAll('')).length||%
             return self._send(json.dumps({"error": "报表不存在"}), "application/json; charset=utf-8")
         r = load_json(path)
         values = build_values(r["sql"], r.get("params", []), given)
-        cols, rows = run_query(r["ds"], substitute(r["sql"], values), values)
+        cols, rows, _tr = run_query(r["ds"], substitute(r["sql"], values))
         self._send(json.dumps({"columns": cols, "rows": rows}, ensure_ascii=False), "application/json; charset=utf-8")
 
     def _export(self, rid, args):
@@ -317,7 +245,7 @@ if(Object.keys(new FormData(document.getElementById('ff')).getAll('')).length||%
             return self._err("报表不存在")
         r = load_json(path)
         values = build_values(r["sql"], r.get("params", []), args)
-        cols, rows = run_query(r["ds"], substitute(r["sql"], values), values)
+        cols, rows, _tr = run_query(r["ds"], substitute(r["sql"], values))
         h = "".join(f"<th>{c}</th>" for c in cols)
         b = "".join("<tr>" + "".join(f"<td>{v}</td>" for v in row) + "</tr>" for row in rows)
         xls = f'<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body><table border="1">{h}{b}</table></body></html>'

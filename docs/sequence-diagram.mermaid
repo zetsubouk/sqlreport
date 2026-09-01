@@ -1,0 +1,71 @@
+sequenceDiagram
+    participant U as 业务用户
+    participant H as Handler(/q/id)
+    participant P as params.py
+    participant D as db.py
+    participant DS1 as MySQL(shop_bj)
+    participant DS2 as SQLServer(shop_sh)
+
+    U->>H: POST /q/r1 (表单参数)
+    H->>H: load reports/r1.json
+    H->>P: normalize_report(r)
+    P-->>H: datasets=[a,b] + merge 配置
+    H->>P: build_values(全报表params, given)
+    P-->>H: values{占位符:已转义值}
+    H->>D: QueryCache.get(rid, values)
+    D-->>H: None (未命中)
+    par 数据集 a
+        H->>D: run_query("shop_bj", substitute(sql_a))
+        D->>DS1: connect(connect_timeout=5, read_timeout=30)
+        DS1-->>D: 连接
+        D->>DS1: execute + fetchmany(1000) 循环, 上限10万行
+        DS1-->>D: cols_a, rows_a
+        D-->>H: cols_a, rows_a
+    and 数据集 b
+        H->>D: run_query("shop_sh", substitute(sql_b))
+        D->>DS2: connect(timeout=30)
+        DS2-->>D: 连接
+        D->>DS2: execute + fetchmany 循环
+        DS2-->>D: cols_b, rows_b
+        D-->>H: cols_b, rows_b
+    end
+    alt merge.mode = union
+        H->>D: merge_union([a,b]) 按列名对齐拼接
+    else merge.mode = lookup
+        H->>D: merge_lookup(base=a, with=b, on=[...])
+        D->>D: 右表建dict(≤10万行), 左表逐行哈希取值
+    end
+    D-->>H: 合并结果 (截断至 max_rows, 标记 truncated)
+    H->>D: QueryCache.put(rid, values, 结果)
+    H-->>U: JSON {columns, rows, truncated, cached:false}
+
+sequenceDiagram
+    participant U as 用户
+    participant H as Handler(/q/id)
+    participant C as QueryCache(Lock+OrderedDict)
+    participant D as db.run_query
+    participant DB as 业务库
+
+    U->>H: POST /q/r1 (参数 dt=2026-01-01~01-31)
+    H->>H: build_values → values
+    H->>C: get("r1:" + sha1(values))
+    alt 命中且未过期
+        C-->>H: (columns, rows)  [expire_at > now]
+        H-->>U: {rows, cached:true} 页面显示「缓存·秒出」
+    else 已过期/不存在/条目超20k行不缓存
+        C->>C: 若过期: 锁内删除该条目
+        H->>D: substitute + execute(超时30s)
+        D->>DB: 查询(fetchmany 循环, 上限10万行)
+        alt 超时 / 超行数上限 / SQL 非只读
+            DB-->>D: 异常或截断
+            D-->>H: 抛错或 truncated 标记
+            H-->>U: 明确错误文案「查询超时，请缩小条件」/「已截断」
+        else 正常
+            DB-->>D: cols, rows(≤max_rows)
+            D-->>H: 结果
+            H->>C: put(key, 结果) 锁内写入, LRU 头插
+            C->>C: 总行数>10万 → LRU 尾部驱逐
+            H-->>U: {rows, cached:false}
+        end
+    end
+    Note over H,C: /save 保存报表成功 → C.invalidate(rid) 清空该报表全部条目

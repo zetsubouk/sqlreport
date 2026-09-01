@@ -1,0 +1,111 @@
+classDiagram
+    direction LR
+
+    class DatasourceStore {
+        +dict _cache
+        +float _mtime
+        +Lock _lock
+        +load() dict
+        +get(name) dict|None
+        +visible_names() list
+        +save(name, cfg) void
+        +delete(name) void
+        +toggle(name, enabled) void
+        +test_connection(cfg) tuple(ok, ms, error)
+        +referenced_by(name) list
+    }
+    note for DatasourceStore "mtime 懒加载缓存 + 原子写(os.replace)
+    _ 前缀条目视为 enabled=false（向后兼容）"
+
+    class QueryCache {
+        +OrderedDict _store
+        +Lock _lock
+        +int MAX_ENTRIES
+        +int MAX_ENTRY_ROWS
+        +int MAX_TOTAL_ROWS
+        +make_key(rid, values) str
+        +get(key) tuple|None
+        +put(key, columns, rows) void
+        +invalidate(rid) void
+        -_evict_if_needed() void
+    }
+    note for QueryCache "TTL 惰性过期 + LRU 驱逐
+    key = rid + sha1(canonical params)"
+
+    class Handler {
+        +do_GET()
+        +do_POST()
+        -_send(data)
+        -_err(msg, code)
+        -_query(rid, given)
+        -_export(rid, args)
+        -_save(data)
+        -_editor(rid)
+        -_ds_list()
+        -_ds_form(rid)
+        -_ds_save(data)
+        -_ds_test(data)
+        -_ds_toggle(data)
+        -_ds_delete(data)
+        -_preview(data)
+        -_check_admin()
+    }
+    note for Handler "路由: /datasources* 新增
+    /q /r /save 行为不变、内部改造"
+
+    class ParamModule {
+        <<module params.py>>
+        +esc(v) str
+        +build_values(sql, params, given) dict
+        +substitute(sql, values) str
+        +normalize_report(report) list
+    }
+    note for ParamModule "纯函数无状态; normalize_report 是
+    双格式兼容唯一入口"
+
+    class DbModule {
+        <<module db.py>>
+        +connect(ds_name) Connection
+        +run_query(ds_name, sql, values) tuple
+        +merge_union(datasets) tuple
+        +merge_lookup(base, with_ds, on, cols) tuple
+        +sql_is_readonly(sql) bool
+        +MAX_ROWS_FETCH int
+    }
+    note for DbModule "驱动懒加载: sqlite3/pymysql/pyodbc
+    超时/行上限/只读校验在此实施"
+
+    Handler --> DbModule : uses
+    Handler --> ParamModule : uses
+    Handler --> DatasourceStore : uses
+    Handler --> QueryCache : uses
+    DbModule --> DatasourceStore : connect() 取连接参数
+    QueryCache ..> DbModule : 缓存 run_query 结果
+
+    class Report {
+        +str name
+        +list params
+        +list datasets
+        +dict merge
+        +int cache_ttl
+        +int max_rows
+    }
+    class Dataset {
+        +str name
+        +str ds
+        +str sql
+    }
+    class Datasource {
+        +str type
+        +str host
+        +int port
+        +str user
+        +str password
+        +str database
+        +int timeout
+        +bool enabled
+        +str note
+    }
+    Report "1" *-- "1..*" Dataset : datasets
+    Dataset --> Datasource : ds 名称引用
+    DatasourceStore o-- Datasource : 管理
