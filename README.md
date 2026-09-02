@@ -82,3 +82,7 @@ sqlreport/
 - **DEVLOG.md**：面向开发者，按日期记录开发过程、踩坑与决策，只追加不修改
 - **PLAN.md**：路线图，功能完成后在对应条目标 ✅ 并注明版本
 - 版本号：`v0.x` 阶段（未对外交付），交付客户起升 `v1.0`；变更遵循语义化（新增功能升 minor，修复升 patch）
+
+# 部署说明
+从仓库 clone 后需先复制模板为真实配置：
+cp datasources.example.json datasources.json   # 填入真实连接（含密码，已被 gitignore）
