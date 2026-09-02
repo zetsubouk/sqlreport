@@ -101,6 +101,9 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 code,.mono{font-family:var(--font-mono);font-size:12.5px}
 .id-cell code{color:var(--brand-strong);background:var(--brand-weak);padding:2px 7px;border-radius:5px;font-size:12px}
 .updated{color:var(--text-muted);font-size:12px}
+/* 多块渲染（Task 12） */
+.block-title{font-size:15px;font-weight:600;margin:14px 0 8px;color:var(--text)}
+.total-row td{font-weight:600;background:var(--surface-muted);border-top:2px solid var(--border-strong)}
 /* 徽章 */
 .tag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:500;padding:2px 9px;border-radius:var(--radius-full);line-height:1.6}
 .tag-on{background:var(--success-weak);color:var(--success)}
@@ -205,12 +208,19 @@ function copyText(t){var done=function(){toast('链接已复制','ok')},fail=fun
   if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done,fail)}else{fail()}}
 /* 共享表格组件：查看页与编辑器试运行共用（滚动容器+客户端分页+状态行）。
    宿主先 tblInit(out)，再 tblShow(out,j,defPage)。 */
+function cellFmt(v,ct){
+  if(ct==='num'&&v!==''&&v!=null){
+    var n=parseFloat(String(v).replace(/,/g,''));
+    if(!isNaN(n))return '<td class="num">'+escHtml(n.toLocaleString('zh-CN',{maximumFractionDigits:2}))+'</td>';}
+  return '<td>'+escHtml(v)+'</td>';}
 function tblInit(out){
   if(out.classList.contains('rs'))return;
   out.classList.add('rs');
   out.addEventListener('change',function(e){
+    if(!out._st)return;
     if(e.target&&e.target.classList&&e.target.classList.contains('ppage'))tblGo(out,1);});
   out.addEventListener('click',function(e){
+    if(!out._st)return;
     var th=e.target&&e.target.closest?e.target.closest('th[data-si]'):null;
     if(th){
       var i=parseInt(th.getAttribute('data-si'),10),s=out._st.sort;
@@ -239,11 +249,7 @@ function tblDraw(out){
   var total=rows.length,pages=Math.max(1,Math.ceil(total/ps));
   if(st.page>pages)st.page=pages;
   var start=(st.page-1)*ps,end=Math.min(start+ps,total),slice=rows.slice(start,end);
-  var fmt=function(v,i){
-    if(st.ct[i]==='num'&&v!==''&&v!=null){
-      var n=parseFloat(String(v).replace(/,/g,''));
-      if(!isNaN(n))return '<td class="num">'+escHtml(n.toLocaleString('zh-CN',{maximumFractionDigits:2}))+'</td>';}
-    return '<td>'+escHtml(v)+'</td>';};
+  var fmt=function(v,i){return cellFmt(v,st.ct[i]);};
   var h='';
   if(st.status)h+='<div class="statusline">'+st.status+'</div>';
   h+='<div class="table-wrap"><table><thead><tr>'+st.cols.map(function(c,i){
@@ -267,6 +273,16 @@ function tblDraw(out){
   h+='</div>';
   out.innerHTML=h;
 }
+function tblStatic(b){
+  /* 静态块（pivot/hist）表格：无分页无排序，末行（pivot 总计行）置底 total-row 样式。 */
+  var cts=b.coltypes||[];
+  var h='<div class="table-wrap"><table><thead><tr>'+b.columns.map(function(c){return '<th>'+escHtml(c)+'</th>';}).join('')+'</tr></thead><tbody>';
+  h+=b.rows.map(function(r,ri){
+    var cls=(ri===b.rows.length-1)?' class="total-row"':'';
+    return '<tr'+cls+'>'+r.map(function(v,i){return cellFmt(v,cts[i]);}).join('')+'</tr>';}).join('');
+  h+='</tbody></table></div>';
+  return h;
+}
 function tblShow(out,j,defPage,given){
   if(j.error){out.innerHTML='<div class="err" style="margin:14px">'+escHtml(j.error)+'</div>';return;}
   var kpi=document.getElementById('kpi');
@@ -285,8 +301,29 @@ function tblShow(out,j,defPage,given){
   if(j.elapsed_ms!=null)st+='<span class="sep">·</span><span>耗时 <b>'+j.elapsed_ms+'</b> ms</span>';
   if(j.cached)st+='<span class="sep">·</span><span class="tag tag-cache">缓存命中</span>';
   if(j.truncated)st+='<span class="sep">·</span><span class="tag tag-warn">结果已截断</span>';
-  out._st={rows:j.rows||[],cols:j.columns||[],ct:j.coltypes||[],total:j.total_row||null,page:1,defPage:defPage||20,status:st};
-  tblDraw(out);
+  var blocks=(j.blocks&&j.blocks.length)?j.blocks:[{type:'table',title:'',columns:j.columns||[],rows:j.rows||[],coltypes:j.coltypes||[]}];
+  // 缺省 / 单 table 块 → 旧路径（D4 兼容）：分页主表 + 状态行整体渲染
+  if(blocks.length===1&&blocks[0].type==='table'){
+    out._st={rows:blocks[0].rows,cols:blocks[0].columns,ct:blocks[0].coltypes,total:j.total_row||null,page:1,defPage:defPage||20,status:st};
+    tblDraw(out);return;
+  }
+  // 多块：状态行置顶，逐块「标题 + 表格」（table 块各自分页，pivot/hist 块静态表）
+  var html='';
+  if(st)html+='<div class="statusline">'+st+'</div>';
+  blocks.forEach(function(b){
+    if(b.title)html+='<div class="block-title">'+escHtml(b.title)+'</div>';
+    if(b.type==='table'){html+='<div class="card" style="margin-bottom:16px" data-tbl></div>';}
+    else{html+='<div class="card" style="margin-bottom:16px">'+tblStatic(b)+'</div>';}
+  });
+  out.innerHTML=html;
+  var segs=out.querySelectorAll('[data-tbl]'),ti=0;
+  blocks.forEach(function(b){
+    if(b.type!=='table')return;
+    var el=segs[ti++];
+    tblInit(el);
+    el._st={rows:b.rows||[],cols:b.columns||[],ct:b.coltypes||[],total:j.total_row||null,page:1,defPage:defPage||20,status:''};
+    tblDraw(el);
+  });
 }
 __SCRIPT__
 </script></body></html>"""
@@ -560,6 +597,7 @@ document.getElementById('fds').addEventListener('change',flt);
         datasets = r.get("datasets") or [{"name": "main", "ds": r.get("ds", ""), "sql": r.get("sql", "")}]
         merge = r.get("merge") or {"mode": "union"}
         title = "编辑报表" if rid else "新建报表"
+        blocks_json = esc_html(json.dumps(r.get("blocks") or [], ensure_ascii=False, indent=2))
         body = f"""<div class="crumb">报表列表 / <b>{title}</b></div>
         <div class="pagehead"><div><h1>{title}</h1><div class="sub">保存后即可获得独立访问 URL</div></div>
         <div style="display:flex;gap:8px"><a class="btn btn-secondary" href="/">取消</a>
@@ -595,6 +633,8 @@ document.getElementById('fds').addEventListener('change',flt);
         <div class="card" style="margin-top:16px"><div class="card-head"><h3>查询参数</h3><span class="hint">全局共享，留空则无条件</span></div>
         <div style="padding:16px 18px"><div id="plist"></div>
         <button type="button" class="btn btn-secondary btn-sm" onclick="addp()">＋ 加参数</button></div></div>
+        <div class="card" style="margin-top:16px"><div class="card-head"><h3>分析块（JSON，可选）</h3><span class="hint">table / pivot 数组，留空 = 仅主表</span></div>
+        <div style="padding:16px 18px"><textarea id="rblocks" rows="6" style="width:100%;font-family:var(--font-mono);font-size:12px" placeholder='[{{"type":"pivot","dataset":"main","row":"region","value":"amount","agg":"sum","title":"区域汇总"}}]'>{blocks_json}</textarea></div></div>
         <div class="reference"><b>查询条件说明</b>
         <code>参数绑定「数据集 + 过滤字段」后，查询时自动生成 WHERE 条件：文本/日期/数字 =，范围类型 ≥ 与 ≤，无需改写 SQL</code>
         <code>{{id}} 文本占位符（手写进 SQL 的条件仍然有效）</code>
@@ -763,6 +803,11 @@ async function save(e){e.preventDefault();
   for(const p of all){
     if(!p.id){toast('存在未填参数ID的参数，请补全或删除','err');return;}
     if(p.type==='select' && !p.source && !(p.options||'').trim()){toast('参数「'+(p.label||p.id)+'」为下拉类型，请绑定过滤字段或填写手动选项','err');return;}}
+  let blocks=null;
+  const btxt=document.getElementById('rblocks').value.trim();
+  if(btxt){
+    try{blocks=JSON.parse(btxt);}
+    catch(err){toast('分析块 JSON 解析失败：'+err.message,'err');return;}}
   const res = await fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({id:%(rid)s,name:document.getElementById('rname').value,
       cache_ttl:parseInt(document.getElementById('rcache').value)||0,
@@ -770,7 +815,7 @@ async function save(e){e.preventDefault();
       export_format:document.getElementById('rexp').value,
       query_mode:document.getElementById('rquery').value,
       page_size:parseInt(document.getElementById('rpage').value)||20,
-      params:collect(),datasets:collectDs(),merge:collectMerge()})});
+      params:collect(),datasets:collectDs(),merge:collectMerge(),blocks:blocks})});
   const j = await res.json();
   if(j.error){toast('失败:'+j.error,'err');return;}
   toast('已保存，URL: /r/'+j.id,'ok');
@@ -1571,23 +1616,42 @@ loadOptions().then(function(){
                        f'attachment; filename*=UTF-8\'\'{fn}')
             return
 
-        def cell(v, i):
+        def cell(v, i, cts):
             """数值列输出真数值（Excel 右对齐/可计算），其余维持 HTML 转义。"""
-            if coltypes[i] == "num":
+            if cts[i] == "num":
                 try:
                     return f'<td style="mso-number-format:0.00;">{float(v)}</td>'
                 except (TypeError, ValueError):
                     pass
             return f"<td>{esc_html(v)}</td>"
 
-        h = "".join(f"<th>{c}</th>" for c in cols)
-        b = "".join("<tr>" + "".join(cell(v, i) for i, v in enumerate(row)) + "</tr>" for row in rows)
-        if total:
-            b += "<tr>" + "".join(cell(v, i) for i, v in enumerate(total)) + "</tr>"
+        def xls_table(bcols, brows, bct, total_row=None):
+            h = "".join(f"<th>{c}</th>" for c in bcols)
+            b = "".join("<tr>" + "".join(cell(v, i, bct) for i, v in enumerate(row)) + "</tr>" for row in brows)
+            if total_row:
+                b += "<tr>" + "".join(cell(v, i, bct) for i, v in enumerate(total_row)) + "</tr>"
+            return f'<table border="1">{h}{b}</table>'
+
         s = ""
         if summary:
             s = "<p>" + "; ".join(f"{esc_html(m.get('label', ''))}: {m.get('value', '')}" for m in summary) + "</p>"
-        xls = f'<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>{s}<table border="1">{h}{b}</table></body></html>'
+        # xls 按 blocks 顺序输出：每块 <h3>标题</h3> + 表格段；table 块附主表合计行（csv 仍只导主表）
+        blocks = result.get("blocks") or [{"type": "table", "title": "",
+                                           "columns": cols, "rows": rows, "coltypes": coltypes}]
+        sections = []
+        for b in blocks:
+            sec = ""
+            if b.get("title"):
+                sec += f"<h3>{esc_html(b['title'])}</h3>"
+            bct = b.get("coltypes") or coltypes
+            bcols = b.get("columns") or cols
+            brows = b.get("rows") or rows
+            if b.get("type") == "table":
+                sec += xls_table(bcols, brows, bct, total)
+            else:
+                sec += xls_table(bcols, brows, bct)
+            sections.append(sec)
+        xls = f'<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>{s}{"".join(sections)}</body></html>'
         fn = urllib.parse.quote(f"{r['name']}.xls")
         self._send(xls.encode("utf-8"), "application/vnd.ms-excel", f'attachment; filename*=UTF-8\'\'{fn}')
 

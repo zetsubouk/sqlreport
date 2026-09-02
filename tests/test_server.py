@@ -417,5 +417,82 @@ class AnalysisOnQuery(ServerTestCase):
         self.assertIn("1470.8", body.replace(",", ""))    # xls 为 HTML 文本
 
 
+class BlocksViewAndExport(ServerTestCase):
+    """Task 12：查看页多块渲染 / 导出多块 / 编辑器 blocks 配置（服务端可测面）。"""
+
+    def _save_pivot_report(self, rid="blk1", title="区域汇总"):
+        rec = {"name": "交叉导出", "ds": "demo",
+               "sql": "SELECT region, amount FROM orders",
+               "blocks": [{"type": "pivot", "dataset": "main", "row": "region",
+                           "value": "amount", "agg": "sum", "title": title}]}
+        self.save_report(rec, rid)
+
+    def test_viewer_blocks_page_ok(self):
+        self._save_pivot_report()
+        st, body = self.get("/r/blk1")
+        self.assertEqual(st, 200)
+        self.assertIn("交叉导出", body)
+        self.assertIn('id="kpi"', body)          # 查看页 KPI 容器仍在
+
+    def test_export_blocks_h3_sections(self):
+        self._save_pivot_report()
+        st, body = self.get("/r/blk1/export")
+        self.assertEqual(st, 200)
+        self.assertIn("<h3>区域汇总</h3>", body)  # pivot 块标题
+        self.assertIn("<th>region</th>", body)
+        self.assertIn("<th>合计</th>", body)      # 单维 pivot 列头
+        self.assertIn("总计", body)               # col_total 总计行
+
+    def test_export_old_report_backward_compat(self):
+        # 无 blocks 旧报表：导出与 v0.4 一致（无 h3 段，仍含主表）
+        self.save_report({"name": "旧报表", "ds": "demo",
+                          "sql": "SELECT region, amount FROM orders",
+                          "params": [], "cache_ttl": 0}, "old1")
+        st, body = self.get("/r/old1/export")
+        self.assertEqual(st, 200)
+        self.assertNotIn("<h3>", body)
+        self.assertIn("<table border=\"1\">", body)
+        self.assertIn("华东", body)
+
+    def test_export_csv_still_main_only(self):
+        # csv 仍只导主表（文档注明），不含 pivot 总计行
+        self._save_pivot_report()
+        st, body = self.get("/r/blk1/export?format=csv")
+        self.assertEqual(st, 200)
+        self.assertIn("region", body)
+        self.assertNotIn("总计", body)
+
+    def test_editor_new_has_blocks_textarea(self):
+        st, body = self.get("/new")
+        self.assertEqual(st, 200)
+        self.assertIn('id="rblocks"', body)
+
+    def test_editor_blocks_textarea_prefilled(self):
+        self._save_pivot_report()
+        st, body = self.get("/edit/blk1")
+        self.assertEqual(st, 200)
+        self.assertIn('id="rblocks"', body)
+        self.assertIn("区域汇总", body)   # 预填已存 blocks JSON
+
+    def test_editor_save_blocks_roundtrip(self):
+        # 编辑器保存路径：带 blocks 字段提交 → /save 经 normalize_blocks 校验后入库
+        self.save_report({"name": "往返", "ds": "demo", "sql": "SELECT region, amount FROM orders",
+                          "blocks": [{"type": "pivot", "dataset": "main", "row": "region",
+                                      "value": "amount", "agg": "sum"}]}, "rt1")
+        r = server.load_json(os.path.join(self.reports_dir, "rt1.json"))
+        self.assertEqual(r["blocks"][0]["type"], "pivot")
+        self.assertEqual(r["blocks"][0]["row"], "region")
+
+    def test_editor_save_rejects_bad_blocks(self):
+        # 非法块类型：/save 返回 error 且不落盘
+        rec = {"name": "坏块", "ds": "demo", "sql": "SELECT region FROM orders",
+               "blocks": [{"type": "chart"}]}
+        st, body = self.post_json("/save", {"id": "badblk", **rec})
+        j = json.loads(body)
+        self.assertEqual(st, 200)
+        self.assertIn("error", j)
+        self.assertFalse(os.path.exists(os.path.join(self.reports_dir, "badblk.json")))
+
+
 if __name__ == "__main__":
     unittest.main()
