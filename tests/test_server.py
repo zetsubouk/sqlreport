@@ -107,6 +107,13 @@ class ServerTestCase(unittest.TestCase):
         self.assertEqual(st, 200, body)
         return json.loads(body)
 
+    def _save_report(self, extra):
+        """分析报表辅助（Task 5 提升到基类）：固定 4 列 SQL + ASCII id analysis1。"""
+        rec = {"name": "分析报表", "ds": "demo",
+               "sql": "SELECT order_id, region, amount, dt FROM orders ORDER BY order_id"}
+        rec.update(extra)
+        self.save_report(rec, "analysis1")
+
     # ---- 基础路由 ----
     def test_index_200(self):
         st, body = self.get("/")
@@ -312,12 +319,6 @@ class ServerTestCase(unittest.TestCase):
 
 
 class AnalysisOnQuery(ServerTestCase):
-    def _save_report(self, extra):
-        rec = {"name": "分析报表", "ds": "demo",
-               "sql": "SELECT order_id, region, amount, dt FROM orders ORDER BY order_id"}
-        rec.update(extra)
-        self.save_report(rec, "analysis1")
-
     def _q(self):
         st, body = self.req("POST", "/q/analysis1", "page=1",
                             "application/x-www-form-urlencoded")
@@ -361,6 +362,13 @@ class AnalysisOnQuery(ServerTestCase):
         self.assertIsNone(j.get("total_row"))         # 决策 D4：固定键，缺省 None/[]
         self.assertEqual(j.get("summary"), [])
         self.assertEqual(len(j["rows"]), 5)
+
+    def test_export_contains_total(self):
+        self._save_report({"total": {"label": "合计"}})
+        st, body = self.req("GET", "/r/analysis1/export")
+        self.assertEqual(st, 200)
+        self.assertIn("合计", body)
+        self.assertIn("1470.8", body.replace(",", ""))    # xls 为 HTML 文本
 
 
 if __name__ == "__main__":

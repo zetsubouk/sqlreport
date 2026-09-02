@@ -1512,7 +1512,9 @@ loadOptions().then(function(){
             result = self._execute_report(rid, r, args)
         except Exception as e:
             return self._err(f"错误：{e}", 500)
-        cols, rows = result["columns"], result["rows"]
+        cols, rows, coltypes = result["columns"], result["rows"], result["coltypes"]
+        total = result.get("total_row")
+        summary = result.get("summary") or []
         fmt = args.get("format") or r.get("export_format") or "xls"
         if fmt == "csv":
             import csv, io
@@ -1521,13 +1523,30 @@ loadOptions().then(function(){
             w.writerow(cols)
             for row in rows:
                 w.writerow(row)
+            if total:
+                w.writerow(total)  # 与页面所见一致：追加合计行
             fn = urllib.parse.quote(f"{r['name']}.csv")
             self._send(buf.getvalue().encode("utf-8-sig"), "text/csv; charset=utf-8",
                        f'attachment; filename*=UTF-8\'\'{fn}')
             return
+
+        def cell(v, i):
+            """数值列输出真数值（Excel 右对齐/可计算），其余维持 HTML 转义。"""
+            if coltypes[i] == "num":
+                try:
+                    return f'<td style="mso-number-format:0.00;">{float(v)}</td>'
+                except (TypeError, ValueError):
+                    pass
+            return f"<td>{esc_html(v)}</td>"
+
         h = "".join(f"<th>{c}</th>" for c in cols)
-        b = "".join("<tr>" + "".join(f"<td>{v}</td>" for v in row) + "</tr>" for row in rows)
-        xls = f'<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body><table border="1">{h}{b}</table></body></html>'
+        b = "".join("<tr>" + "".join(cell(v, i) for i, v in enumerate(row)) + "</tr>" for row in rows)
+        if total:
+            b += "<tr>" + "".join(cell(v, i) for i, v in enumerate(total)) + "</tr>"
+        s = ""
+        if summary:
+            s = "<p>" + "; ".join(f"{esc_html(m.get('label', ''))}: {m.get('value', '')}" for m in summary) + "</p>"
+        xls = f'<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>{s}<table border="1">{h}{b}</table></body></html>'
         fn = urllib.parse.quote(f"{r['name']}.xls")
         self._send(xls.encode("utf-8"), "application/vnd.ms-excel", f'attachment; filename*=UTF-8\'\'{fn}')
 
