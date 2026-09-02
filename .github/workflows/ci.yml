@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 语法编译检查
+        run: |
+          python3 -m py_compile server.py db.py params.py
+      - name: 模块导入冒烟
+        run: |
+          python3 -c "import server, db, params; print('import ok')"
+      - name: 服务启动 + 首页冒烟
+        run: |
+          python3 server.py > /tmp/srv.log 2>&1 &
+          SRV=$!
+          sleep 2
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8765/ || true)
+          kill $SRV 2>/dev/null || true
+          if [ "$code" != "200" ]; then cat /tmp/srv.log; exit 1; fi
+          echo "HTTP $code OK"

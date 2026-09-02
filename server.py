@@ -1,3 +1,7 @@
+# sqlreport - 轻量 SQL 报表工具
+# Copyright (c) 2026 zetsubouk
+# SPDX-License-Identifier: MIT
+
 #!/usr/bin/env python3
 """轻量 SQL 报表工具：贴 SQL + 参数条件 + 独立 URL + Excel 导出。
 Python 标准库实现；MySQL/SQLServer 驱动按需懒加载（pymysql / pyodbc）。

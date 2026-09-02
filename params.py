@@ -1,3 +1,7 @@
+# sqlreport - 轻量 SQL 报表工具
+# Copyright (c) 2026 zetsubouk
+# SPDX-License-Identifier: MIT
+
 """参数层（纯函数，无状态）：占位符转义/校验/替换 + 报表双格式归一化。
 
 esc/build_values/substitute 自 server.py v0.1 原样迁移，正则与行为不得改动

@@ -1,3 +1,7 @@
+# sqlreport - 轻量 SQL 报表工具
+# Copyright (c) 2026 zetsubouk
+# SPDX-License-Identifier: MIT
+
 """数据层：数据源存取（mtime 懒加载 + 原子写）/ 建连（超时）/ 查询（fetchmany 分批 + 行硬顶）
 / 只读 SQL 校验 / 跨源合并引擎（union/lookup）/ TTL+LRU 查询缓存。
 
