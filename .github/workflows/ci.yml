@@ -18,12 +18,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: 安装项目（可编辑模式）
+        run: pip install -e .
       - name: 语法编译检查
-        run: |
-          python3 -m py_compile server.py db.py params.py
+        run: python3 -m py_compile src/sqlreport/*.py
       - name: 模块导入冒烟
-        run: |
-          python3 -c "import server, db, params; print('import ok')"
+        run: python3 -c "import sqlreport.server, sqlreport.db, sqlreport.params; print('import ok')"
+      - name: 单元测试（零依赖 unittest）
+        run: python3 -m unittest discover -s tests -v
       - name: 服务启动 + 首页冒烟
         run: |
           python3 server.py > /tmp/srv.log 2>&1 &

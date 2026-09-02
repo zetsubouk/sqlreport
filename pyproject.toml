@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sqlreport"
+version = "0.3.0"
+description = "轻量 SQL 报表工具：贴 SQL + 参数条件 + 独立 URL + Excel 导出"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = []
+optional-dependencies.mysql = ["pymysql"]
+optional-dependencies.mssql = ["pyodbc"]
+
+[project.scripts]
+sqlreport = "sqlreport.server:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+packages = ["sqlreport"]
+
+[tool.pytest]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
