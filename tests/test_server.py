@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""server.py 进程内集成测试：真实 ThreadingHTTPServer + 临时 sqlite，覆盖全部路由。
+回归项：/q JSON 与 form 双形态（Bug#1）、缓存命中/失效、截断、数据源 CRUD、管理页保护。"""
+import base64
+import http.client
+import json
+import os
+import shutil
+import sqlite3
+import sys
+import tempfile
+import threading
+import unittest
+from http.server import ThreadingHTTPServer
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import db
+import server
+from db import DatasourceStore, QueryCache
+
+HOST = "127.0.0.1"
+
+
+def make_demo_db(path):
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE orders (order_id TEXT, cust_id TEXT, region TEXT, amount REAL, dt TEXT)")
+    cur.executemany(
+        "INSERT INTO orders VALUES (?,?,?,?,?)",
+        [("O1", "C1", "华东", 100.0, "2026-01-01"),
+         ("O2", "C1", "华东", 250.5, "2026-01-02"),
+         ("O3", "C2", "华北", 88.0, "2026-01-03"),
+         ("O4", "C3", "华南", 999.0, "2026-01-04"),
+         ("O5", "C2", "华北", 33.3, "2026-01-05")])
+    cur.execute("CREATE TABLE customers (cust_id TEXT, cname TEXT, level TEXT)")
+    cur.executemany("INSERT INTO customers VALUES (?,?,?)",
+                    [("C1", "张三", "VIP"), ("C2", "李四", "普通"), ("C3", "王五", "普通")])
+    conn.commit()
+    conn.close()
+
+
+class ServerTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.demodb = os.path.join(self.tmp, "demo.db")
+        make_demo_db(self.demodb)
+        self.ds_file = os.path.join(self.tmp, "datasources.json")
+        self.reports_dir = os.path.join(self.tmp, "reports")
+        self.config_file = os.path.join(self.tmp, "config.json")
+        os.makedirs(self.reports_dir, exist_ok=True)
+        self._backup = (
+            db.DS_FILE, db.REPORTS_DIR, db.DS_STORE, db.CACHE,
+            server.DS_STORE, server.CACHE, server.REPORTS_DIR, server.CONFIG_FILE)
+        db.DS_FILE = self.ds_file
+        db.REPORTS_DIR = self.reports_dir
+        db.DS_STORE = DatasourceStore(self.ds_file)
+        db.CACHE = QueryCache()
+        server.DS_STORE = db.DS_STORE
+        server.CACHE = db.CACHE
+        server.REPORTS_DIR = self.reports_dir
+        server.CONFIG_FILE = self.config_file
+        db.DS_STORE.save("demo", {"type": "sqlite", "path": self.demodb,
+                                  "timeout": 30, "enabled": True, "note": ""})
+        self.httpd = ThreadingHTTPServer((HOST, 0), server.Handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        (db.DS_FILE, db.REPORTS_DIR, db.DS_STORE, db.CACHE,
+         server.DS_STORE, server.CACHE, server.REPORTS_DIR, server.CONFIG_FILE) = self._backup
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    # ---- 请求辅助 ----
+    def req(self, method, path, body=None, ctype=None, auth=None):
+        headers = {}
+        if ctype:
+            headers["Content-Type"] = ctype
+        if auth:
+            headers["Authorization"] = auth
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+        conn = http.client.HTTPConnection(HOST, self.port, timeout=10)
+        conn.request(method, path, body=body, headers=headers)
+        resp = conn.getresponse()
+        data = resp.read().decode("utf-8")
+        self.last_ctype = resp.getheader("Content-Type", "")
+        conn.close()
+        return resp.status, data
+
+    def get(self, path, auth=None):
+        return self.req("GET", path, auth=auth)
+
+    def post_json(self, path, obj, auth=None):
+        return self.req("POST", path, body=json.dumps(obj, ensure_ascii=False),
+                        ctype="application/json", auth=auth)
+
+    def post_form(self, path, obj):
+        import urllib.parse
+        return self.req("POST", path, body=urllib.parse.urlencode(obj),
+                        ctype="application/x-www-form-urlencoded")
+
+    def save_report(self, rec, rid):
+        st, body = self.post_json("/save", {"id": rid, **rec})
+        self.assertEqual(st, 200, body)
+        return json.loads(body)
+
+    # ---- 基础路由 ----
+    def test_index_200(self):
+        st, body = self.get("/")
+        self.assertEqual(st, 200)
+        self.assertIn("SQL 报表", body)
+
+    def test_404(self):
+        st, _ = self.get("/nope")
+        self.assertEqual(st, 400)
+
+    # ---- 报表保存与查询 ----
+    def test_save_and_query_legacy_format(self):
+        self.save_report({"name": "订单", "ds": "demo", "sql": "SELECT * FROM orders",
+                          "params": [], "cache_ttl": 0}, "orders")
+        st, body = self.post_json("/q/orders", {})
+        j = json.loads(body)
+        self.assertEqual(j["columns"], ["order_id", "cust_id", "region", "amount", "dt"])
+        self.assertEqual(len(j["rows"]), 5)
+        self.assertFalse(j["cached"])
+
+    def test_save_without_id_generates_random_id(self):
+        st, body = self.post_json("/save", {"name": "订单", "ds": "demo",
+                                            "sql": "SELECT * FROM orders", "params": [],
+                                            "cache_ttl": 0})
+        self.assertEqual(st, 200, body)
+        j = json.loads(body)
+        self.assertRegex(j["id"], r"^[0-9a-f]{16}$")
+        self.assertTrue(os.path.exists(os.path.join(self.reports_dir, j["id"] + ".json")))
+
+    def test_save_rejects_invalid_id(self):
+        st, body = self.post_json("/save", {"id": "../evil", "name": "订单", "ds": "demo",
+                                            "sql": "SELECT * FROM orders", "params": [],
+                                            "cache_ttl": 0})
+        self.assertEqual(st, 200)
+        self.assertIn("error", json.loads(body))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "evil.json")))
+        self.assertEqual([f for f in os.listdir(self.reports_dir) if f.endswith(".json")], [])
+
+    def test_query_param_filtering(self):
+        self.save_report({"name": "区域", "ds": "demo",
+                          "sql": "SELECT * FROM orders\nWHERE region = '{{region}}'",
+                          "params": [{"id": "region", "type": "text"}], "cache_ttl": 0}, "by_region")
+        st, body = self.post_json("/q/by_region", {"region": "华东"})
+        j = json.loads(body)
+        self.assertEqual(len(j["rows"]), 2)
+
+    def test_query_optional_param_blank_returns_all(self):
+        self.save_report({"name": "区域", "ds": "demo",
+                          "sql": "SELECT * FROM orders\nWHERE region = '{{region}}'",
+                          "params": [{"id": "region", "type": "text"}], "cache_ttl": 0}, "by_region2")
+        st, body = self.post_json("/q/by_region2", {"region": ""})
+        self.assertEqual(len(json.loads(body)["rows"]), 5)
+
+    def test_injection_escaped_no_crash(self):
+        self.save_report({"name": "区域", "ds": "demo",
+                          "sql": "SELECT * FROM orders\nWHERE region = '{{region}}'",
+                          "params": [{"id": "region", "type": "text"}], "cache_ttl": 0}, "inj")
+        st, body = self.post_json("/q/inj", {"region": "x' OR '1'='1"})
+        self.assertEqual(st, 200)
+        self.assertEqual(len(json.loads(body)["rows"]), 0)
+
+    def test_json_and_form_equivalent(self):
+        rec = {"name": "区域", "ds": "demo",
+               "sql": "SELECT * FROM orders\nWHERE region = '{{region}}'",
+               "params": [{"id": "region", "type": "text"}], "cache_ttl": 0}
+        self.save_report(rec, "eq")
+        _, jbody = self.post_json("/q/eq", {"region": "华东"})
+        _, fbody = self.post_form("/q/eq", {"region": "华东"})
+        self.assertEqual(json.loads(jbody)["rows"], json.loads(fbody)["rows"])
+
+    def test_readonly_sql_rejected(self):
+        self.save_report({"name": "坏SQL", "ds": "demo", "sql": "DELETE FROM orders",
+                          "params": [], "cache_ttl": 0}, "bad")
+        st, body = self.post_json("/q/bad", {})
+        j = json.loads(body)
+        self.assertIn("error", j)
+        self.assertIn("只读", j["error"])
+
+    def test_query_missing_report(self):
+        st, body = self.post_json("/q/ghost", {})
+        self.assertIn("error", json.loads(body))
+
+    # ---- 缓存 ----
+    def test_cache_hit_and_invalidate_on_save(self):
+        rec = {"name": "缓存", "ds": "demo", "sql": "SELECT * FROM orders",
+               "params": [], "cache_ttl": 60}
+        self.save_report(rec, "c1")
+        _, first = self.post_json("/q/c1", {})
+        _, second = self.post_json("/q/c1", {})
+        self.assertFalse(json.loads(first)["cached"])
+        self.assertTrue(json.loads(second)["cached"])
+        self.save_report(rec, "c1")  # 保存应失效缓存
+        _, third = self.post_json("/q/c1", {})
+        self.assertFalse(json.loads(third)["cached"])
+
+    def test_truncation_flag(self):
+        rec = {"name": "截断", "ds": "demo", "sql": "SELECT * FROM orders",
+               "params": [], "cache_ttl": 0, "max_rows": 3}
+        self.save_report(rec, "tr")
+        _, body = self.post_json("/q/tr", {})
+        j = json.loads(body)
+        self.assertEqual(len(j["rows"]), 3)
+        self.assertTrue(j["truncated"])
+
+    # ---- 多数据集合并 ----
+    def test_union_merge(self):
+        rec = {"name": "合并", "params": [], "cache_ttl": 0,
+               "datasets": [{"name": "a", "ds": "demo",
+                             "sql": "SELECT region, amount FROM orders"},
+                            {"name": "b", "ds": "demo",
+                             "sql": "SELECT region, amount FROM orders"}],
+               "merge": {"mode": "union"}}
+        self.save_report(rec, "uni")
+        _, body = self.post_json("/q/uni", {})
+        self.assertEqual(len(json.loads(body)["rows"]), 10)
+
+    def test_lookup_merge(self):
+        rec = {"name": "关联", "params": [], "cache_ttl": 0,
+               "datasets": [{"name": "base", "ds": "demo",
+                             "sql": "SELECT cust_id, order_id, amount FROM orders"},
+                            {"name": "dim", "ds": "demo",
+                             "sql": "SELECT cust_id, cname FROM customers"}],
+               "merge": {"mode": "lookup", "base": "base", "with": "dim",
+                         "on": ["cust_id"], "cols": ["cname"]}}
+        self.save_report(rec, "lk")
+        _, body = self.post_json("/q/lk", {})
+        j = json.loads(body)
+        self.assertIn("cname", j["columns"])
+        self.assertEqual(j["rows"][0][-1], "张三")
+
+    # ---- 预览 ----
+    def test_preview(self):
+        st, body = self.post_json("/preview",
+                                  {"ds": "demo", "sql": "SELECT * FROM orders", "params": []})
+        j = json.loads(body)
+        self.assertEqual(st, 200)
+        self.assertEqual(len(j["rows"]), 5)
+
+    def test_preview_bad_ds(self):
+        st, body = self.post_json("/preview", {"ds": "ghost", "sql": "SELECT 1", "params": []})
+        self.assertIn("error", json.loads(body))
+
+    # ---- 导出 ----
+    def test_export(self):
+        self.save_report({"name": "导出", "ds": "demo", "sql": "SELECT * FROM orders",
+                          "params": [], "cache_ttl": 0}, "ex")
+        st, body = self.get("/r/ex/export")
+        self.assertEqual(st, 200)
+        self.assertIn("application/vnd.ms-excel", self.last_ctype)
+        self.assertIn("order_id", body)
+        self.assertIn("华东", body)
+
+    # ---- 数据源管理 ----
+    def test_ds_save_toggle_delete(self):
+        st, body = self.post_json("/datasources/save",
+                                  {"name": "tmp1", "type": "sqlite", "path": self.demodb})
+        self.assertEqual(st, 200, body)
+        st, body = self.post_json("/datasources/toggle", {"name": "tmp1", "enabled": False})
+        self.assertEqual(st, 200)
+        self.assertTrue(self.is_ds_hidden("tmp1"))
+        st, body = self.post_json("/datasources/delete", {"name": "tmp1"})
+        self.assertEqual(st, 200, body)
+
+    def test_ds_delete_referenced_requires_force(self):
+        self.save_report({"name": "引", "ds": "demo", "sql": "SELECT 1", "params": []}, "ref1")
+        st, body = self.post_json("/datasources/delete", {"name": "demo"})
+        j = json.loads(body)
+        self.assertIn("referenced", j)
+        self.assertEqual(j["referenced"], ["ref1"])
+        st, body = self.post_json("/datasources/delete", {"name": "demo", "force": True})
+        self.assertEqual(st, 200, body)
+
+    def test_ds_test_connection(self):
+        st, body = self.post_json("/datasources/test", {"name": "demo"})
+        j = json.loads(body)
+        self.assertTrue(j["ok"], j)
+
+    def is_ds_hidden(self, name):
+        return name not in db.DS_STORE.visible_names()
+
+    # ---- 管理页保护 ----
+    def test_admin_no_password_localhost_allowed(self):
+        st, _ = self.get("/datasources")
+        self.assertEqual(st, 200)
+
+    def test_admin_password_basic_auth(self):
+        with open(self.config_file, "w", encoding="utf-8") as f:
+            json.dump({"admin_password": "pw"}, f)
+        st, _ = self.get("/datasources")
+        self.assertEqual(st, 401)
+        token = "Basic " + base64.b64encode(b"admin:pw").decode()
+        st, body = self.get("/datasources", auth=token)
+        self.assertEqual(st, 200)
+        self.assertIn("数据源管理", body)
+
+    # ---- 查看页 ----
+    def test_viewer_page(self):
+        self.save_report({"name": "页面", "ds": "demo", "sql": "SELECT * FROM orders",
+                          "params": [], "cache_ttl": 0}, "pg")
+        st, body = self.get("/r/pg")
+        self.assertEqual(st, 200)
+        self.assertIn("页面", body)
+
+
+if __name__ == "__main__":
+    unittest.main()
