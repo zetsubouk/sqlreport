@@ -17,32 +17,46 @@
 ## 快速开始
 
 ```bash
-pip install pymysql              # 如需 MySQL（SQLServer 需 pyodbc + ODBC 驱动）
-cp datasources.example.json datasources.json   # 填入真实数据源连接（已被 gitignore）
-python3 server.py                # 默认 0.0.0.0:8765，或 PORT=8765 python3 server.py
+pip install -e .                    # 可编辑安装
+# 按需：pip install -e ".[mysql]"  或  ".[mssql]"
+cp examples/datasources.example.json datasources.json  # 填入真实连接（已被 gitignore）
+python server.py                    # 默认 0.0.0.0:8765
+# 或：sqlreport                     # 安装后可用命令行入口
+# 或：python -m sqlreport 8765      # 模块方式
 ```
 
 1. 浏览器打开 `http://<host>:8765/`，点「＋新建报表」
 2. 填名称、选数据源、贴 SQL（用 `{{参数}}` 占位）、定义参数控件
 3. 保存后即得独立访问 URL `/r/<报表id>`，用户免登录直接查询、导出 Excel
 
-> 报表定义存放于 `reports/*.json`（一文件一报表）。`server.py` 会在首次保存时自动创建该目录。
+> 报表定义存放于 `reports/*.json`（一文件一报表）。首次保存时自动创建该目录。
 
 ## 目录结构
 
 ```
 sqlreport/
-├── server.py          # 路由 + 页面模板（视图层）
-├── db.py              # 数据层：数据源存取/建连(超时)/查询限流/合并引擎/查询缓存
-├── params.py          # 参数层：转义/替换/报表双格式归一化（纯函数）
-├── config.json        # 全局配置（不入库）：admin_password 空=管理页仅本机可访问
-├── datasources.example.json  # 数据源配置模板（"_[前缀]"或 enabled:false = 禁用）
-├── reports/*.json     # 运行时报表定义（不入库，按需创建）
-├── docs/              # PRD / 架构设计文档
-├── PLAN.md            # 架构总结 + 开发计划
-├── CHANGELOG.md       # 版本变更记录
-└── DEVLOG.md          # 开发日志（按日期追加，含踩坑记录）
+├── src/sqlreport/         # 源码包（标准 src 布局）
+│   ├── __init__.py
+│   ├── __main__.py        # python -m sqlreport 入口
+│   ├── server.py          # 路由 + 页面模板（视图层）
+│   ├── db.py              # 数据层：连接/限流/合并/缓存
+│   └── params.py          # 参数层：转义/替换/归一化（纯函数）
+├── server.py              # 根级兼容入口（转发到 src）
+├── db.py / params.py      # 根级兼容 shim（保留旧导入）
+├── pyproject.toml         # 构建与项目元数据（pip install -e .）
+├── tests/                 # 单元/集成测试
+├── scripts/               # 运维脚本（start.bat / stop.bat）
+├── examples/              # 配置样例（datasources.example.json）
+├── docs/                  # 架构与产品文档
+│   ├── DESIGN-v0.2.md / PRD-v0.2.md
+│   ├── diagrams/          # 架构图（mermaid）
+│   └── DEVELOPMENT.md     # 开发准则（必读）
+├── reports/*.json         # 运行时报表定义（不入库）
+├── config.json            # 全局配置（不入库）
+└── datasources.json       # 数据源配置（不入库）
 ```
+
+详见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 开发准则。
 
 ## 数据源管理
 
@@ -83,6 +97,16 @@ sqlreport/
 | 日期范围 | `dt >= '{{d.begin}}' AND dt <= '{{d.end}}'` | 也支持下划线写法 `{{d_begin}}` |
 | 数字范围 | `amt >= '{{n.min}}' AND amt <= '{{n.max}}'` | 同上 |
 | 可选条件 | 含占位符的整行，参数未填时自动丢弃 | 条件务必独立成行 |
+
+## Windows 部署
+
+```bat
+scripts\start.bat         :: 后台启动（端口 8765，日志 logs\sqlreport.log）
+scripts\start.bat 9000    :: 指定端口
+scripts\stop.bat          :: 停止
+```
+
+`scripts/start.bat` 自动探测 `python`/`py`/`python3`，端口占用检查，`start /min` 后台运行；根目录 `start.bat`/`stop.bat` 为薄转发，兼容旧路径。
 
 ## 安全约定
 

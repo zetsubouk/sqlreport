@@ -138,7 +138,7 @@ class QueryCache:
 
 查询响应 JSON 统一为 `{"columns":[...], "rows":[...], "truncated": bool, "cached": bool, "elapsed_ms": int}` 或 `{"error": "..."}`——前端据 `truncated` 显示「结果超 N 行已截断，请缩小条件」，据 `cached` 显示「缓存 x 秒前」。
 
-#### 3.6 类图（完整版见 docs/class-diagram.mermaid）
+#### 3.6 类图（完整版见 docs/diagrams/class-diagram.mermaid）
 
 ```mermaid
 classDiagram
@@ -366,4 +366,4 @@ graph TD
 
 ---
 
-*设计产出物：本文档、docs/sequence-diagram.mermaid、docs/class-diagram.mermaid*
+*设计产出物：本文档、docs/diagrams/sequence-diagram.mermaid、docs/diagrams/class-diagram.mermaid（当前源码以 src/sqlreport/ 为准，见 docs/DEVELOPMENT.md）*
