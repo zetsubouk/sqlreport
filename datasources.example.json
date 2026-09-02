@@ -8,7 +8,7 @@
     "host": "127.0.0.1",
     "port": 13306,
     "user": "oadb",
-    "password": "***",
+    "password": "REPLACE_ME",
     "database": "a8100"
   },
   "_sqlserver示例": {
@@ -16,7 +16,7 @@
     "host": "172.12.0.253",
     "port": 1433,
     "user": "sa",
-    "password": "***",
+    "password": "REPLACE_ME",
     "database": "A810SP1YS"
   }
 }

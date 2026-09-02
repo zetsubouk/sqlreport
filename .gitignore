@@ -3,3 +3,5 @@ __pycache__/
 server.log
 demo.db
 config.json
+
+datasources.json
