@@ -438,6 +438,12 @@ updType();
                               "on": [str(x) for x in on],
                               "metric": str(c["metric"]),
                               "label": str(c.get("label") or "")}
+        # views 保存视图（Task 17）：name 非空、params 为字典（无后端存储，查看页渲染为快捷链接）
+        if isinstance(data.get("views"), list):
+            rec["views"] = [{"name": str(v.get("name", "")).strip(),
+                             "params": dict(v.get("params") or {})}
+                            for v in data["views"]
+                            if isinstance(v, dict) and str(v.get("name", "")).strip()]
         # 双格式兼容：归一化后仅 1 个数据集 → 写回旧 {ds, sql} 格式（旧文件 diff 稳定）；≥2 个才写 datasets
         datasets = normalize_report(data, DS_STORE.visible_names())
         if len(datasets) == 1:

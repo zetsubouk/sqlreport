@@ -12,6 +12,7 @@
 import json
 import os
 import time
+import urllib.parse
 
 from sqlreport import __version__
 from sqlreport.db import load_json
@@ -752,7 +753,17 @@ def render_viewer(h, store, reports_dir, rid, args):
     fmt = r.get("export_format") or "xls"
     fmt_opts = "".join(f'<option value="{v}"{" selected" if v == fmt else ""}>{lbl}</option>'
                        for v, lbl in (("xls", "格式 .xls"), ("csv", "格式 .csv")))
+    # 保存视图（Task 17）：views = [{name, params}] → 快捷链接（URL 即状态，无后端存储）
+    views_html = ""
+    views = [v for v in (r.get("views") or []) if isinstance(v, dict) and v.get("name")]
+    if views:
+        links = "".join(
+            f'<a class="btn btn-secondary" href="/r/{rid}?{urllib.parse.urlencode(v.get("params") or {})}">{esc_html(v["name"])}</a>'
+            for v in views)
+        views_html = (f'<div class="viewsbar" style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">'
+                      f'<span style="line-height:30px;color:#888">快捷视图：</span>{links}</div>')
     body = f"""<div class="crumb">报表列表 / <b>{name}</b></div>
+        {views_html}
         <div class="pagehead"><div><h1>{name}</h1><div class="sub">设置查询条件，查看或导出数据</div></div>
         <div style="display:flex;gap:8px"><a class="btn btn-secondary" href="/edit/{rid}">编辑</a>
         <a class="btn btn-primary" href="/new">＋ 新建报表</a></div></div>

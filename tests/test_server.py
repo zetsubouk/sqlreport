@@ -653,5 +653,36 @@ class BlocksViewAndExport(ServerTestCase):
         self.assertFalse(os.path.exists(os.path.join(self.reports_dir, "badblk.json")))
 
 
+class ViewsBarTest(ServerTestCase):
+    """保存视图（Task 17）：/save 白名单落盘 + 查看页快捷链接（URL 即状态）。"""
+
+    def test_save_views_whitelist_persists(self):
+        rec = {"name": "视图报表", "ds": "demo", "sql": "SELECT region FROM orders",
+               "views": [{"name": "本月", "params": {"d": "2026-09-01", "d_2": "2026-09-30"}},
+                         {"name": "无参数", "params": {}}]}
+        self.save_report(rec, "views1")
+        r = server.load_json(os.path.join(self.reports_dir, "views1.json"))
+        self.assertEqual(r["views"][0]["name"], "本月")
+        self.assertEqual(r["views"][0]["params"], {"d": "2026-09-01", "d_2": "2026-09-30"})
+
+    def test_viewer_renders_view_links(self):
+        rec = {"name": "视图报表", "ds": "demo", "sql": "SELECT region FROM orders",
+               "views": [{"name": "本月", "params": {"d": "2026-09-01", "d_2": "2026-09-30"}}]}
+        self.save_report(rec, "views2")
+        st, body = self.get("/r/views2")
+        self.assertEqual(st, 200)
+        self.assertIn("快捷视图", body)
+        self.assertIn("/r/views2?d=2026-09-01", body)  # urlencode 后的参数链接
+        self.assertIn(">本月</a>", body)
+
+    def test_viewer_without_views_no_bar(self):
+        # 兼容对：无 views 键的查看页无快捷区，页面结构与旧版一致
+        rec = {"name": "无视图", "ds": "demo", "sql": "SELECT region FROM orders"}
+        self.save_report(rec, "views3")
+        st, body = self.get("/r/views3")
+        self.assertEqual(st, 200)
+        self.assertNotIn("快捷视图", body)
+
+
 if __name__ == "__main__":
     unittest.main()
