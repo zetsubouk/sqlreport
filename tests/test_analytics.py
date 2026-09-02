@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from analytics import total_row, _to_num, summary_metrics, top_n_rows, add_share_columns
+from analytics import total_row, _to_num, summary_metrics, top_n_rows, add_share_columns, bucket_column
 
 COLS = ["区域", "金额", "单数"]
 TYPES = ["str", "num", "num"]
@@ -117,3 +117,34 @@ class TestShareColumns(unittest.TestCase):
         rows = [["A", 60.0]]
         add_share_columns(["区域", "金额"], rows, ["str", "num"], "金额")
         self.assertEqual(rows, [["A", 60.0]])
+
+
+class TestBucketColumn(unittest.TestCase):
+    def test_month(self):
+        rows = [["2026-01-05"], ["2026/02/11 10:00"], ["bad"], ["2026-01-31"]]
+        out = bucket_column(["dt"], rows, "dt", "month")
+        self.assertEqual([r[0] for r in out], ["2026-01", "2026-02", "bad", "2026-01"])
+
+    def test_quarter_and_week(self):
+        self.assertEqual(bucket_column(["dt"], [["2026-04-02"]], "dt", "quarter")[0][0], "2026Q2")
+        self.assertEqual(bucket_column(["dt"], [["2026-01-01"]], "dt", "week")[0][0], "2026-W01")
+
+    def test_day_unchanged_and_shared_rows(self):
+        rows = [["2026-01-05"]]
+        out = bucket_column(["dt"], rows, "dt", "day")
+        self.assertEqual(out[0][0], "2026-01-05")
+        out[0][0] = "x"          # day 模式返回原行对象，调用方不得再改 —— 锁定该行为
+        self.assertEqual(rows[0][0], "x")
+
+    def test_bad_unit_rejected(self):
+        with self.assertRaises(ValueError):
+            bucket_column(["dt"], [["2026-01-01"]], "dt", "year")
+
+    def test_invalid_date_kept(self):
+        out = bucket_column(["dt"], [["2026-13-40"]], "dt", "month")
+        self.assertEqual(out[0][0], "2026-13-40")
+
+    def test_input_not_mutated(self):
+        rows = [["2026-01-05"]]
+        bucket_column(["dt"], rows, "dt", "month")
+        self.assertEqual(rows[0][0], "2026-01-05")

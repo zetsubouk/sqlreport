@@ -7,6 +7,8 @@
 与 params.py 同风格：输入输出同构（cols, rows, coltypes），不触碰数据源与报表文件。
 所有分析基于「最终返回行集」（docs/PLAN-v0.4-v0.7.md 决策 D2）。
 """
+import datetime
+import re
 
 _NUM_COLTYPES = ("num",)
 
@@ -136,3 +138,37 @@ def add_share_columns(cols, rows, coltypes, col, digits=1):
         cum += share
         nrows.append(list(r) + [share, round(cum, digits)])
     return cols + [col + "占比%", col + "累计%"], nrows, list(coltypes) + ["num", "num"]
+
+
+_DATE_RE = re.compile(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})")
+
+
+def bucket_column(cols, rows, col, unit):
+    """把日期列值替换为分桶标签：month→YYYY-MM，quarter→YYYYQn，week→ISO 年-W周号，day→原样返回 rows。
+    值须以 YYYY-MM-DD 或 YYYY/MM/DD 开头；无法解析/日期非法的值原样保留。
+    返回新 rows（month/quarter/week 模式不改入参行；day 模式返回原行对象列表）。"""
+    if unit not in ("day", "week", "month", "quarter"):
+        raise ValueError(f"bucket 单位不支持: {unit}")
+    if unit == "day":
+        return list(rows)
+    i = _col_index(cols, col, "bucket ")
+    out = []
+    for r in rows:
+        r2 = list(r)
+        if i < len(r2):
+            m = _DATE_RE.match(str(r2[i]).strip())
+            if m:
+                try:
+                    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                    dt = datetime.date(y, mo, d)          # 校验日期合法性；非法抛 ValueError 原样保留
+                    if unit == "month":
+                        r2[i] = f"{y}-{mo:02d}"
+                    elif unit == "quarter":
+                        r2[i] = f"{y}Q{(mo - 1) // 3 + 1}"
+                    else:
+                        iso = dt.isocalendar()
+                        r2[i] = f"{iso[0]}-W{iso[1]:02d}"
+                except ValueError:
+                    pass  # 非法日期原样保留
+        out.append(r2)
+    return out
