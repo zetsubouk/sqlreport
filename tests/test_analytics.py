@@ -6,7 +6,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from analytics import total_row, _to_num, summary_metrics, top_n_rows, add_share_columns, bucket_column
+from analytics import (total_row, _to_num, summary_metrics, top_n_rows,
+                       add_share_columns, bucket_column, pivot)
 
 COLS = ["区域", "金额", "单数"]
 TYPES = ["str", "num", "num"]
@@ -148,3 +149,47 @@ class TestBucketColumn(unittest.TestCase):
         rows = [["2026-01-05"]]
         bucket_column(["dt"], rows, "dt", "month")
         self.assertEqual(rows[0][0], "2026-01-05")
+
+
+P_COLS = ["区域", "产品", "金额"]
+P_TYPES = ["str", "str", "num"]
+P_ROWS = [["华东", "A", 100.0], ["华东", "B", 50.0], ["华北", "A", 30.0]]
+
+
+class TestPivot(unittest.TestCase):
+    def test_basic_sum_with_totals(self):
+        pc, pr, pt = pivot(P_COLS, P_ROWS, P_TYPES, "区域", "产品", "金额")
+        self.assertEqual(pc, ["区域", "A", "B", "合计"])
+        self.assertEqual(pr[0], ["华东", 100.0, 50.0, 150.0])
+        self.assertEqual(pr[1], ["华北", 30.0, "", 30.0])
+        self.assertEqual(pr[-1][0], "总计")
+        self.assertEqual(pr[-1][-1], 180.0)
+
+    def test_agg_avg_count(self):
+        rows = [["R", "A", 10.0], ["R", "A", 30.0]]
+        _, pr, _ = pivot(P_COLS, rows, P_TYPES, "区域", "产品", "金额",
+                         agg="avg", row_total=False, col_total=False)
+        self.assertEqual(pr[0][1], 20.0)
+        _, pr2, _ = pivot(P_COLS, rows, P_TYPES, "区域", "产品", "金额",
+                          agg="count", row_total=False, col_total=False)
+        self.assertEqual(pr2[0][1], 2)
+
+    def test_too_many_cols_rejected(self):
+        rows = [[f"k{i}", "A", 1.0] for i in range(51)]
+        with self.assertRaises(ValueError):
+            pivot(P_COLS, rows, P_TYPES, "区域", "产品", "金额", max_cols=50)
+
+    def test_value_must_be_num(self):
+        with self.assertRaises(ValueError):
+            pivot(P_COLS, P_ROWS, P_TYPES, "区域", "产品", "产品")
+
+    def test_empty_dim_normalized(self):
+        rows = [["", "A", 1.0], [None, "A", 2.0]]
+        _, pr, _ = pivot(["r", "c", "v"], rows, ["str", "str", "num"],
+                         "r", "c", "v", row_total=False, col_total=False)
+        self.assertEqual(pr[0][0], "")   # None 与 "" 归并为空串
+
+    def test_input_not_mutated(self):
+        snapshot = [list(r) for r in P_ROWS]
+        pivot(P_COLS, P_ROWS, P_TYPES, "区域", "产品", "金额")
+        self.assertEqual(P_ROWS, snapshot)

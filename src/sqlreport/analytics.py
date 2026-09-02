@@ -172,3 +172,108 @@ def bucket_column(cols, rows, col, unit):
                     pass  # 非法日期原样保留
         out.append(r2)
     return out
+
+
+_PIVOT_AGGS = ("sum", "count", "avg", "max", "min")
+
+
+def pivot(cols, rows, coltypes, row, col, value, agg="sum",
+          row_total=True, col_total=True, max_cols=50):
+    """透视表：以 row 列为行维度、col 列为列维度、value 列按 agg 聚合生成交叉表。
+
+    - 列头：col 维度去重、按首现顺序；去重后（行维度同理）> max_cols 抛中文 ValueError
+      （提示先在 SQL 层归类维度列）。
+    - 行序：row 维度值排序——列全为数值则数值升序，否则按 str 排序；排序并列保持首现顺序
+      （sorted 稳定）；维度 None 与 "" 归并为 ""。
+    - 数据格：value 列按 agg（sum/count/avg/max/min）聚合；count 计非空值数；无数据格记 ""；
+      value 列非 num（且 agg≠count）抛 ValueError。
+    - row_total=True 追加「合计」列；col_total=True 追加「总计」行。
+      avg 已知口径：合计/总计为基于底层原始值重算的均值，格内均值之和 ≠ 该均值。
+    返回 (pcols, prows, ptypes)，不改入参。"""
+    if agg not in _PIVOT_AGGS:
+        raise ValueError(f"透视表不支持的聚合方式: {agg}")
+    ri = _col_index(cols, row, "pivot ")
+    ci = _col_index(cols, col, "pivot ")
+    vi = _col_index(cols, value, "pivot ")
+    if coltypes[vi] not in _NUM_COLTYPES and agg != "count":
+        raise ValueError(f"透视表 value 列必须是数值列: {value}")
+    # 维度归并（None 与 "" → ""）与首现序去重
+    col_vals, seen_c = [], set()
+    row_keys, seen_r = [], set()
+    for r in rows:
+        cv = "" if (ci >= len(r) or r[ci] in ("", None)) else r[ci]
+        if cv not in seen_c:
+            seen_c.add(cv)
+            col_vals.append(cv)
+        rv = "" if (ri >= len(r) or r[ri] in ("", None)) else r[ri]
+        if rv not in seen_r:
+            seen_r.add(rv)
+            row_keys.append(rv)
+    if len(col_vals) > max_cols:
+        raise ValueError(f"透视表列数超过上限 {max_cols}，请在 SQL 层先归类维度列")
+    if len(row_keys) > max_cols:
+        raise ValueError(f"透视表行数超过上限 {max_cols}，请在 SQL 层先归类维度列")
+    # 行序：全数值→数值升序；否则按 str；sorted 稳定保持首现序
+    if all(_to_num(k) is not None for k in row_keys):
+        row_order = sorted(row_keys, key=_to_num)
+    else:
+        row_order = sorted(row_keys, key=str)
+    # 聚合：raw 存原始数值（avg 合计/总计需重算）；count 计非空值数
+    raw, cnt = {}, {}
+    row_raw, row_cnt = {}, {}
+    col_raw, col_cnt = {}, {}
+    grand_raw, grand_cnt = [], 0
+    for r in rows:
+        rv = "" if (ri >= len(r) or r[ri] in ("", None)) else r[ri]
+        cv = "" if (ci >= len(r) or r[ci] in ("", None)) else r[ci]
+        v = r[vi] if vi < len(r) else None
+        if agg == "count":
+            if v not in ("", None):
+                key = (rv, cv)
+                cnt[key] = cnt.get(key, 0) + 1
+                row_cnt[rv] = row_cnt.get(rv, 0) + 1
+                col_cnt[cv] = col_cnt.get(cv, 0) + 1
+                grand_cnt += 1
+        else:
+            n = _to_num(v)
+            if n is not None:
+                key = (rv, cv)
+                raw.setdefault(key, []).append(n)
+                row_raw.setdefault(rv, []).append(n)
+                col_raw.setdefault(cv, []).append(n)
+                grand_raw.append(n)
+
+    def _agg(vals):
+        if agg == "sum":
+            return sum(vals)
+        if agg == "avg":
+            return sum(vals) / len(vals)
+        if agg == "max":
+            return max(vals)
+        return min(vals)
+
+    def _cell(vals):
+        return _agg(vals) if vals is not None else ""
+
+    def _total(vals, n):
+        if agg == "count":
+            return n if n else ""
+        return _cell(vals)
+
+    pcols = [row] + list(col_vals)
+    ptypes = [coltypes[ri]] + ["num"] * len(col_vals)
+    prows = []
+    for rv in row_order:
+        cells = [_total(raw.get((rv, cv)), cnt.get((rv, cv))) for cv in col_vals]
+        if row_total:
+            cells.append(_total(row_raw.get(rv), row_cnt.get(rv)))
+        prows.append([rv] + cells)
+    if col_total:
+        trow = ["总计"] + [_total(col_raw.get(cv), col_cnt.get(cv)) for cv in col_vals]
+        if row_total:
+            trow.append(_total(grand_raw if grand_raw else None, grand_cnt))
+        prows.append(trow)
+    if row_total:
+        pcols = pcols + ["合计"]
+        ptypes = ptypes + ["num"]
+    return pcols, prows, ptypes
