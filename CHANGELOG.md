@@ -113,14 +113,6 @@
 
 - 对外既有路由签名不变；管理页默认仅本机 127.0.0.1 可访问（`config.json` 的 `admin_password` 非空时改走 HTTP Basic）
 
-### 计划中（见 PLAN.md）
-
-- P0：MySQL/SQLServer 真库连通测试、SQLServer ODBC 部署文档、数值列类型保留
-
-- P1：合计行、简单交叉表（pivot 配置）、点列头排序、SQL 层分页翻页
-
-- P2：真 .xlsx 导出、报表 token 鉴权、systemd/Docker 化、报表分组目录
-
 ## \[v0.1] - 2026-09-02
 
 首个可运行版本。
