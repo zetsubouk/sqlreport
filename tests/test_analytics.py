@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from analytics import total_row, _to_num, summary_metrics
+from analytics import total_row, _to_num, summary_metrics, top_n_rows, add_share_columns
 
 COLS = ["区域", "金额", "单数"]
 TYPES = ["str", "num", "num"]
@@ -75,3 +75,45 @@ class TestSummaryMetrics(unittest.TestCase):
 
     def test_empty_metrics(self):
         self.assertEqual(summary_metrics(COLS, ROWS, TYPES, None), [])
+
+
+class TestTopNRows(unittest.TestCase):
+    def test_merge_rest(self):
+        rows = [["A", 50.0], ["B", 30.0], ["C", 15.0], ["D", 5.0]]
+        out = top_n_rows(["区域", "金额"], rows, ["str", "num"], "金额", n=2)
+        self.assertEqual(out[0], ["A", 50.0])
+        self.assertEqual(out[1], ["B", 30.0])
+        self.assertEqual(out[2], ["其他", 20.0])
+
+    def test_fewer_than_n_unchanged(self):
+        rows = [["A", 50.0]]
+        self.assertEqual(top_n_rows(["区域", "金额"], rows, ["str", "num"], "金额", n=10), rows)
+
+    def test_non_num_col_rejected(self):
+        with self.assertRaises(ValueError):
+            top_n_rows(["区域", "金额"], [["A", 1.0]], ["str", "num"], "区域")
+
+    def test_missing_col_rejected(self):
+        with self.assertRaises(ValueError):
+            top_n_rows(["区域", "金额"], [["A", 1.0]], ["str", "num"], "不存在")
+
+
+class TestShareColumns(unittest.TestCase):
+    def test_share_and_cumulative(self):
+        cols, rows, types = add_share_columns(["区域", "金额"],
+                                              [["A", 60.0], ["B", 30.0], ["其他", 10.0]],
+                                              ["str", "num"], "金额")
+        self.assertEqual(cols, ["区域", "金额", "金额占比%", "金额累计%"])
+        self.assertEqual(rows[0], ["A", 60.0, 60.0, 60.0])
+        self.assertEqual(rows[1], ["B", 30.0, 30.0, 90.0])
+        self.assertEqual(rows[2], ["其他", 10.0, 10.0, 100.0])
+        self.assertEqual(types, ["str", "num", "num", "num"])
+
+    def test_zero_total(self):
+        _, rows, _ = add_share_columns(["c", "v"], [["A", 0.0]], ["str", "num"], "v")
+        self.assertEqual(rows[0][2], 0.0)
+
+    def test_input_not_mutated(self):
+        rows = [["A", 60.0]]
+        add_share_columns(["区域", "金额"], rows, ["str", "num"], "金额")
+        self.assertEqual(rows, [["A", 60.0]])

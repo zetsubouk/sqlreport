@@ -85,3 +85,54 @@ def summary_metrics(cols, rows, coltypes, metrics):
             continue
         out.append({"label": m.get("label") or col + _FN_NAMES.get(fn, fn), "value": val})
     return out
+
+
+def top_n_rows(cols, rows, coltypes, col, n=10, others="其他"):
+    """按数值列 col 降序保留前 n 行，其余归并为 1 行（首列写 others 标签，数值列求和，其余留空）。
+    行数 ≤ n 时按原行序浅拷贝返回。排序值并列时保持原行序（sorted 稳定）。
+    col 缺失或非数值列抛 ValueError。"""
+    i = _col_index(cols, col, "top_n ")
+    if coltypes[i] not in _NUM_COLTYPES:
+        raise ValueError(f"top_n 列必须是数值列: {col}")
+    if len(rows) <= n:
+        return list(rows)
+    def key(r):
+        v = _to_num(r[i]) if i < len(r) else None
+        return v if v is not None else float("-inf")
+    srt = sorted(rows, key=key, reverse=True)
+    keep, rest = srt[:n], srt[n:]
+    merged = [""] * len(cols)
+    for j, t in enumerate(coltypes):
+        if t not in _NUM_COLTYPES:
+            continue
+        s = 0.0
+        for r in rest:
+            v = _to_num(r[j]) if j < len(r) else None
+            if v is not None:
+                s += v
+        merged[j] = s
+    merged[0] = others
+    return keep + [merged]
+
+
+def add_share_columns(cols, rows, coltypes, col, digits=1):
+    """追加「{col}占比%」「{col}累计%」两列。要求 rows 已按 col 降序（配合 top_n_rows 使用）。
+    累计列基于四舍五入后的占比累加，末行可能与 100 有 ±0.1 舍入差（已知口径）。
+    返回新 (cols, rows, coltypes)，不改入参；分母为 0 记 0.0。col 缺失或非数值列抛 ValueError。"""
+    i = _col_index(cols, col, "share ")
+    if coltypes[i] not in _NUM_COLTYPES:
+        raise ValueError(f"share 列必须是数值列: {col}")
+    total = 0.0
+    for r in rows:
+        v = _to_num(r[i]) if i < len(r) else None
+        if v is not None:
+            total += v
+    cum = 0.0
+    nrows = []
+    for r in rows:
+        v = _to_num(r[i]) if i < len(r) else None
+        v = v if v is not None else 0.0
+        share = round(v / total * 100, digits) if total else 0.0
+        cum += share
+        nrows.append(list(r) + [share, round(cum, digits)])
+    return cols + [col + "占比%", col + "累计%"], nrows, list(coltypes) + ["num", "num"]
