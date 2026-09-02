@@ -15,7 +15,7 @@ from sqlreport.db import CACHE, DS_STORE, load_json, run_query, merge_union, mer
 from sqlreport.params import build_values, substitute, normalize_report, esc, normalize_blocks
 from sqlreport.analytics import (total_row, summary_metrics, top_n_rows, add_share_columns,
                                  bucket_column, pivot)
-from sqlreport.views_report import PAGE, nav, page, esc_html, _rel_time
+from sqlreport.views_report import PAGE, nav, page, esc_html
 
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPORTS_DIR = os.path.join(BASE, "reports")
