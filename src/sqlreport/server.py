@@ -220,12 +220,18 @@ function tblDraw(out){
   var total=st.rows.length,pages=Math.max(1,Math.ceil(total/ps));
   if(st.page>pages)st.page=pages;
   var start=(st.page-1)*ps,end=Math.min(start+ps,total),slice=st.rows.slice(start,end);
+  var fmt=function(v,i){
+    if(st.ct[i]==='num'&&v!==''&&v!=null){
+      var n=parseFloat(String(v).replace(/,/g,''));
+      if(!isNaN(n))return '<td class="num">'+escHtml(n.toLocaleString('zh-CN',{maximumFractionDigits:2}))+'</td>';}
+    return '<td>'+escHtml(v)+'</td>';};
   var h='';
   if(st.status)h+='<div class="statusline">'+st.status+'</div>';
   h+='<div class="table-wrap"><table><thead><tr>'+st.cols.map(function(c){return '<th>'+escHtml(c)+'</th>';}).join('')+'</tr></thead><tbody>';
-  h+=slice.map(function(r){return '<tr>'+r.map(function(v,i){
-    return '<td>'+escHtml(v)+'</td>';}).join('')+'</tr>';}).join('');
-  h+='</tbody></table></div>';
+  h+=slice.map(function(r){return '<tr>'+r.map(fmt).join('')+'</tr>';}).join('');
+  h+='</tbody>';
+  if(st.total)h+='<tfoot><tr>'+st.total.map(fmt).join('')+'</tr></tfoot>';
+  h+='</table></div>';
   h+='<div class="resultbar">';
   h+='<span style="font-size:12.5px;color:var(--text-secondary)">'+total+' 行 · 第 '+st.page+'/'+pages+' 页</span><span class="spacer"></span>';
   h+='每页 <select class="ppage">'+function(){
@@ -240,13 +246,25 @@ function tblDraw(out){
   h+='</div>';
   out.innerHTML=h;
 }
-function tblShow(out,j,defPage){
+function tblShow(out,j,defPage,given){
   if(j.error){out.innerHTML='<div class="err" style="margin:14px">'+escHtml(j.error)+'</div>';return;}
-  var st='<span>共 <b>'+(j.rows||[]).length+'</b> 行</span>';
+  var kpi=document.getElementById('kpi');
+  if(kpi){kpi.innerHTML=(j.summary||[]).map(function(m){
+    var v=(m.value==null)?'':(typeof m.value==='number'
+      ?m.value.toLocaleString('zh-CN',{maximumFractionDigits:2}):m.value);
+    return '<div class="stat"><div class="v">'+escHtml(String(v))+'</div><div class="k">'+escHtml(m.label)+'</div></div>';
+  }).join('')||(j.summary?'':'');}
+  var st='';
+  if(given){
+    var parts=[];
+    for(var k in given){if(given[k]!=='')parts.push(escHtml(k)+'='+escHtml(given[k]));}
+    if(parts.length)st+='<span>参数：'+parts.join(' · ')+'</span>';}
+  st+='<span>共 <b>'+(j.rows||[]).length+'</b> 行</span>';
+  st+='<span class="sep">·</span><span>基于 <b>'+(j.rows||[]).length+'</b> 行计算</span>';
   if(j.elapsed_ms!=null)st+='<span class="sep">·</span><span>耗时 <b>'+j.elapsed_ms+'</b> ms</span>';
   if(j.cached)st+='<span class="sep">·</span><span class="tag tag-cache">缓存命中</span>';
   if(j.truncated)st+='<span class="sep">·</span><span class="tag tag-warn">结果已截断</span>';
-  out._st={rows:j.rows||[],cols:j.columns||[],ct:j.coltypes||[],page:1,defPage:defPage||20,status:st};
+  out._st={rows:j.rows||[],cols:j.columns||[],ct:j.coltypes||[],total:j.total_row||null,page:1,defPage:defPage||20,status:st};
   tblDraw(out);
 }
 __SCRIPT__
@@ -1046,6 +1064,7 @@ updType();
             <button type="button" class="btn btn-secondary" onclick="clr()">清空条件</button>
           </div>
         </div></form>
+        <div id="kpi" class="stat-grid" style="margin-top:16px"></div>
         <div class="card" style="margin-top:16px"><div id="out" style="min-height:120px">
         <div class="empty" style="padding:40px 20px"><div class="il">🔍</div><h4>设置条件后点「查询」</h4></div>
         </div></div>"""
@@ -1079,10 +1098,13 @@ async function run(){
   btns.forEach(function(b){b.disabled=true;});
   OUT.innerHTML='<div class="statusline"><span class="spinner"></span> 查询中，请稍候…</div>';
   try{
+    const fd=new FormData(document.getElementById('ff'));
+    const given={};
+    fd.forEach(function(v,k){given[k]=v;});
     const res=await fetch('/q/'+RID,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      body:new URLSearchParams(new FormData(document.getElementById('ff')))});
+      body:new URLSearchParams(fd)});
     const j=await res.json();
-    tblShow(OUT,j,DEF_PAGE);
+    tblShow(OUT,j,DEF_PAGE,given);
   } finally { btns.forEach(function(b){b.disabled=false;}); }
 }
 function exp(){
