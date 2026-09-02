@@ -76,3 +76,11 @@
 - **管理页保护**：不设口令默认仅本机；HTTP Basic 代码路径保留，填 `admin_password` 即启用。
 - **缓存不做后台清理线程**：惰性过期 + 写入时 LRU 驱逐，维持零线程形态。
 - demo.db 追加 `customers` 表与 `orders.cust_id` 列（幂等迁移），支撑 lookup 演示报表。
+
+## 2026-09-02 ｜ v0.2 QA 回归与 Bug#1 修复
+
+- QA 独立回归（严过关）：9 项全 PASS（旧报表回归/union/lookup/缓存/截断/数据源管理/异常/并发20/py_compile）。
+- 发现 Bug#1：/q 与 /preview 的 JSON Content-Type 提交参数被截断——_body() 对 JSON 返回 {k: v[0]} 结构，_flat() 再取 v[0]，字符串被截成单字符；且同首字符导致缓存 key 撞车（"换参数仍 cached=true"假象）。
+- 修复（commit 1f7518c，最小改动）：_body() 按 Content-Type 统一返回标量字典（JSON 分支原样返回嵌套数组）；_flat() 收敛为 /q 专用幂等展平（仅对残留列表取首元素）。
+- QA 复测：15/15 PASS 闭环（JSON/form 结果一致、缓存 key 归一、/preview、/save 嵌套数组透传、只读校验、数据源保护 403）。
+- 排除 3 项疑似问题（均测试脚本问题）：JSON 参数形态须用生效参数 pid/pid_2；单数据集保存写回旧格式为设计约定；union 空参数被只读校验拒为既有可选条件语义。
