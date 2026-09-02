@@ -134,6 +134,14 @@ class TestNormalizeBlocks(unittest.TestCase):
         with self.assertRaises(ValueError):
             normalize_blocks({"blocks": [{"type": "pivot", "dataset": "a", "row": "r"}]})
 
+    def test_hist_valid(self):
+        r = {"blocks": [{"type": "hist", "col": "amount", "bins": 5}]}
+        self.assertEqual(normalize_blocks(r), r["blocks"])
+
+    def test_hist_missing_col_rejected(self):
+        with self.assertRaises(ValueError):
+            normalize_blocks({"blocks": [{"type": "hist", "bins": 5}]})
+
 
 if __name__ == "__main__":
     unittest.main()

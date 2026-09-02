@@ -508,6 +508,74 @@ class CompareOnQuery(ServerTestCase):
         self.assertIn("compare 引用的数据集不存在", j["error"])
 
 
+class HistBlockOnQuery(ServerTestCase):
+    """Task 16：数值分箱统计表 hist 块（静态块，与 pivot 同机制）。"""
+
+    def _q(self, rid="hist1"):
+        st, body = self.req("POST", f"/q/{rid}", "page=1",
+                            "application/x-www-form-urlencoded")
+        self.assertEqual(st, 200, body)
+        return json.loads(body)
+
+    def test_q_blocks_hist(self):
+        rec = {"name": "分箱", "ds": "demo", "sql": "SELECT amount FROM orders",
+               "blocks": [{"type": "hist", "dataset": "main", "col": "amount",
+                           "bins": 5, "title": "金额分布"}]}
+        self.save_report(rec, "hist1")
+        j = self._q()
+        b = j["blocks"][0]
+        self.assertEqual(b["type"], "hist")
+        self.assertEqual(b["title"], "金额分布")
+        self.assertEqual(b["columns"], ["区间", "计数", "占比%"])
+        self.assertEqual(b["coltypes"], ["str", "num", "num"])
+        self.assertEqual(sum(r[1] for r in b["rows"]), 5)   # 5 个订单金额全部入箱
+        self.assertAlmostEqual(sum(r[2] for r in b["rows"]), 100.0, delta=0.3)
+        # 顶层键仍为主表（向后兼容，决策 D4）
+        self.assertEqual(j["columns"], ["amount"])
+
+    def test_hist_cache_exempt(self):
+        # 守护红线：cache_ttl>0 + hist 块 → 两次 /q 均 hist 完整且 cached=False
+        rec = {"name": "分箱缓存", "ds": "demo", "sql": "SELECT amount FROM orders",
+               "cache_ttl": 60,
+               "blocks": [{"type": "hist", "dataset": "main", "col": "amount", "bins": 5}]}
+        self.save_report(rec, "hist2")
+        for _ in range(2):
+            j = self._q("hist2")
+            self.assertFalse(j["cached"])
+            self.assertEqual(j["blocks"][0]["type"], "hist")
+            self.assertEqual(sum(r[1] for r in j["blocks"][0]["rows"]), 5)
+
+    def test_export_hist_section(self):
+        rec = {"name": "分箱", "ds": "demo", "sql": "SELECT amount FROM orders",
+               "blocks": [{"type": "hist", "dataset": "main", "col": "amount",
+                           "bins": 5, "title": "金额分布"}]}
+        self.save_report(rec, "hist1")
+        st, body = self.get("/r/hist1/export")
+        self.assertEqual(st, 200)
+        self.assertIn("<h3>金额分布</h3>", body)
+        self.assertIn("<th>区间</th>", body)
+        self.assertIn("<th>计数</th>", body)
+
+    def test_save_hist_missing_col_rejected(self):
+        rec = {"name": "坏分箱", "ds": "demo", "sql": "SELECT amount FROM orders",
+               "blocks": [{"type": "hist", "bins": 5}]}
+        st, body = self.post_json("/save", {"id": "badhist", **rec})
+        j = json.loads(body)
+        self.assertEqual(st, 200)
+        self.assertIn("error", j)
+        self.assertFalse(os.path.exists(os.path.join(self.reports_dir, "badhist.json")))
+
+    def test_no_hist_backward_compat(self):
+        # 兼容对：无 hist 块的报表行为不变（blocks 默认单 table 块，无区间列）
+        self.save_report({"name": "无分箱", "ds": "demo", "sql": "SELECT amount FROM orders"},
+                         "hist3")
+        j = self._q("hist3")
+        self.assertEqual(len(j["blocks"]), 1)
+        self.assertEqual(j["blocks"][0]["type"], "table")
+        self.assertNotIn("区间", j["blocks"][0]["columns"])
+        self.assertEqual(len(j["rows"]), 5)
+
+
 class BlocksViewAndExport(ServerTestCase):
     """Task 12：查看页多块渲染 / 导出多块 / 编辑器 blocks 配置（服务端可测面）。"""
 

@@ -94,15 +94,17 @@ def normalize_report(report, ds_names=None):
     return datasets
 
 
-_BLOCK_TYPES = ("table", "pivot")
+_BLOCK_TYPES = ("table", "pivot", "hist")
 _PIVOT_REQUIRED = ("dataset", "row", "value")
+_HIST_REQUIRED = ("col",)
 
 
 def normalize_blocks(report):
     """报表 blocks 数组归一化（决策 D3/D10）：无 blocks → [{"type": "table"}]（零迁移）。
 
-    块类型白名单 table/pivot；pivot 必填 dataset/row/value（保存期校验，中文 ValueError）。
-    执行期才校验列名/列型（save 时无数据集结果）。原块对象原样透传（不改结构）。
+    块类型白名单 table/pivot/hist；pivot 必填 dataset/row/value、hist 必填 col
+    （保存期校验，中文 ValueError）。执行期才校验列名/列型（save 时无数据集结果）。
+    原块对象原样透传（不改结构）。
     """
     blocks = report.get("blocks")
     if not blocks:
@@ -118,5 +120,9 @@ def normalize_blocks(report):
             missing = [k for k in _PIVOT_REQUIRED if not b.get(k)]
             if missing:
                 raise ValueError("pivot 块缺少必填键: " + ", ".join(missing))
+        if t == "hist":
+            missing = [k for k in _HIST_REQUIRED if not b.get(k)]
+            if missing:
+                raise ValueError("hist 块缺少必填键: " + ", ".join(missing))
         out.append(b)
     return out

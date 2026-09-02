@@ -487,7 +487,7 @@ def render_editor(h, store, reports_dir, rid):
         <div class="card" style="margin-top:16px"><div class="card-head"><h3>查询参数</h3><span class="hint">全局共享，留空则无条件</span></div>
         <div style="padding:16px 18px"><div id="plist"></div>
         <button type="button" class="btn btn-secondary btn-sm" onclick="addp()">＋ 加参数</button></div></div>
-        <div class="card" style="margin-top:16px"><div class="card-head"><h3>分析块（JSON，可选）</h3><span class="hint">table / pivot 数组，留空 = 仅主表</span></div>
+        <div class="card" style="margin-top:16px"><div class="card-head"><h3>分析块（JSON，可选）</h3><span class="hint">table / pivot / hist 数组，留空 = 仅主表</span></div>
         <div style="padding:16px 18px"><textarea id="rblocks" rows="6" style="width:100%;font-family:var(--font-mono);font-size:12px" placeholder='[{{"type":"pivot","dataset":"main","row":"region","value":"amount","agg":"sum","title":"区域汇总"}}]'>{blocks_json}</textarea></div></div>
         <div class="reference"><b>查询条件说明</b>
         <code>参数绑定「数据集 + 过滤字段」后，查询时自动生成 WHERE 条件：文本/日期/数字 =，范围类型 ≥ 与 ≤，无需改写 SQL</code>

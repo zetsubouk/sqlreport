@@ -14,7 +14,7 @@ from sqlreport import views_report
 from sqlreport.db import CACHE, DS_STORE, load_json, run_query, merge_union, merge_lookup
 from sqlreport.params import build_values, substitute, normalize_report, esc, normalize_blocks
 from sqlreport.analytics import (total_row, summary_metrics, top_n_rows, add_share_columns,
-                                 bucket_column, pivot, diff_merge)
+                                 bucket_column, pivot, diff_merge, bin_numeric)
 from sqlreport.views_report import PAGE, nav, page, esc_html
 
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -743,10 +743,16 @@ updType();
                 blocks.append({"type": "table", "title": b.get("title", ""),
                                "columns": cols, "rows": rows, "coltypes": coltypes})
                 continue
-            ds_name = b.get("dataset")
+            ds_name = b.get("dataset") or datasets[0]["name"]
             if ds_name not in results:
-                raise ValueError(f"pivot 块引用的数据集不存在: {ds_name}")
+                raise ValueError(f"{b.get('type')} 块引用的数据集不存在: {ds_name}")
             bcols, brows, btypes = results[ds_name]
+            if b.get("type") == "hist":
+                hcols, hrows, htypes = bin_numeric(bcols, brows, btypes, str(b["col"]),
+                                                   bins=int(b.get("bins") or 10))
+                blocks.append({"type": "hist", "title": b.get("title", ""),
+                               "columns": hcols, "rows": hrows, "coltypes": htypes})
+                continue
             agg = str(b.get("agg") or "sum")
             max_cols = int(b.get("max_cols") or 50)
             col_total = bool(b.get("col_total", True))
