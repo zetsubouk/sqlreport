@@ -1,11 +1,23 @@
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
 server.log
+logs/
 demo.db
 config.json
-
 datasources.json
-
-# 测试数据与演示报表不入库（用户约定）
 reports/
 .DS_Store
+Thumbs.db
+.env
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.trae/
