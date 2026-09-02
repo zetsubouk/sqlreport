@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sqlreport"
-version = "0.5.0"
+version = "0.6.0"
 description = "轻量 SQL 报表工具：贴 SQL + 参数条件 + 独立 URL + Excel 导出"
 readme = "README.md"
 license = { text = "MIT" }

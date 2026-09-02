@@ -3,21 +3,43 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化。
 最新变更置顶。
 
-## [v0.5.0] - 2026-09-03
+## \[v0.6.0] - 2026-09-03
 
 ### 新增
-- **透视表** `analytics.pivot`：row × col 交叉表，agg 支持 sum/count/avg/max/min，小计列「合计」+ 总计行「总计」（avg 为底层原始值重算口径），行/列维度均 > 50 拒绝（提示 SQL 层归类），None 与空串归并；行序数值升序、否则字符串序，保持首现序
-- **分析块化 Schema**：报表 JSON 顶层可选 `blocks`（类型 table / pivot），无 blocks → 单 table 块（零迁移）；`normalize_blocks` 校验类型白名单与 pivot 必填键（保存期拒绝非法配置）
-- **多块报表**：`/q` 响应固定新增 `blocks`（块级 `{type,title,columns,rows,coltypes}`），查看页逐块渲染（table 块分页表格 + 合计行，pivot 块静态表 + 置底合计行），导出 xls 按块输出（标题 + 表格段，csv 仍仅主表）
-- **单维汇总锁定形态**：pivot 块 col 缺省时列头为 `[row, "合计"]`（注入常量维度列，不引入合成列名）
-- **编辑器**：新增「分析块（JSON，可选）」配置区，保存时校验
-- **视图层拆分**：页面模板与拼装函数迁至 `src/sqlreport/views_report.py`（PAGE/nav/page/esc_html/_rel_time/render_list/render_editor/render_viewer/param_form），server.py 保留薄转发，路由与业务方法不动
+
+- **对比差值** `analytics.diff_merge`：报表顶层可选 `compare`（`dataset` 指定第二数据集、`on` 关联键、`metric` 指标列、`label` 对比期标签），为主表追加「{metric}({label})差值」「{metric}({label})增长率%」两列（环比语义）；右侧缺失留空、r=0 增长率留空、行序保持主表首现序
+
+- **数值分箱表** `analytics.bin_numeric`：等宽分箱（hi==lo 退化单区间、左闭右开末箱右闭），输出 `[区间, 计数, 占比%]`；作为 blocks 新类型 `hist` 接入（必填 col，bins 可选）
+
+- **保存视图**：报表顶层可选 `views`（`[{name, params}]`），查看页顶部渲染快捷链接（URL 即状态，无后端存储）；`/save` 白名单校验 name 非空、params 为字典
 
 ### 兼容性
-- 旧报表（无 blocks）行为与 v0.4 完全一致（`/q` 顶层键、导出逐字节）；`_execute_report` 收敛为单一 return
-- **缓存豁免**：含非 table 块（pivot/hist）的报表不使用结果缓存（cache_ttl 视为 0），因缓存仅存主表行、命中路径拿不到各 dataset 原始结果（决策 D2 / Task 11 Step 3.5）
 
-## [v0.4.0] - 2026-09-03
+- `compare` 与含非 table 块（pivot/hist）的报表同享缓存豁免（cache\_ttl 视为 0，不读不写）；无 compare/views 键的旧报表行为与 v0.5 完全一致
+
+## \[v0.5.0] - 2026-09-03
+
+### 新增
+
+- **透视表** `analytics.pivot`：row × col 交叉表，agg 支持 sum/count/avg/max/min，小计列「合计」+ 总计行「总计」（avg 为底层原始值重算口径），行/列维度均 > 50 拒绝（提示 SQL 层归类），None 与空串归并；行序数值升序、否则字符串序，保持首现序
+
+- **分析块化 Schema**：报表 JSON 顶层可选 `blocks`（类型 table / pivot），无 blocks → 单 table 块（零迁移）；`normalize_blocks` 校验类型白名单与 pivot 必填键（保存期拒绝非法配置）
+
+- **多块报表**：`/q` 响应固定新增 `blocks`（块级 `{type,title,columns,rows,coltypes}`），查看页逐块渲染（table 块分页表格 + 合计行，pivot 块静态表 + 置底合计行），导出 xls 按块输出（标题 + 表格段，csv 仍仅主表）
+
+- **单维汇总锁定形态**：pivot 块 col 缺省时列头为 `[row, "合计"]`（注入常量维度列，不引入合成列名）
+
+- **编辑器**：新增「分析块（JSON，可选）」配置区，保存时校验
+
+- **视图层拆分**：页面模板与拼装函数迁至 `src/sqlreport/views_report.py`（PAGE/nav/page/esc\_html/\_rel\_time/render\_list/render\_editor/render\_viewer/param\_form），server.py 保留薄转发，路由与业务方法不动
+
+### 兼容性
+
+- 旧报表（无 blocks）行为与 v0.4 完全一致（`/q` 顶层键、导出逐字节）；`_execute_report` 收敛为单一 return
+
+- **缓存豁免**：含非 table 块（pivot/hist）的报表不使用结果缓存（cache\_ttl 视为 0），因缓存仅存主表行、命中路径拿不到各 dataset 原始结果（决策 D2 / Task 11 Step 3.5）
+
+## \[v0.4.0] - 2026-09-03
 
 ### 新增
 
@@ -37,7 +59,7 @@
 
 - 旧报表（无任何分析键）行为与 v0.3 完全一致；`_execute_report` 收敛为单一 return，缓存命中路径同样走分析管道
 
-## [v0.3.0] - 2026-09-02
+## \[v0.3.0] - 2026-09-02
 
 ### 新增
 
@@ -65,7 +87,7 @@
 
 - 根目录 `datasources.example.json` 副本（真源移至 `examples/`）；文档与快速开始已同步为 `cp examples/datasources.example.json datasources.json`
 
-## [v0.2.0] - 2026-09-02
+## \[v0.2.0] - 2026-09-02
 
 ### 新增
 
@@ -99,7 +121,7 @@
 
 - P2：真 .xlsx 导出、报表 token 鉴权、systemd/Docker 化、报表分组目录
 
-## [v0.1] - 2026-09-02
+## \[v0.1] - 2026-09-02
 
 首个可运行版本。
 
