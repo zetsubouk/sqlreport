@@ -417,6 +417,97 @@ class AnalysisOnQuery(ServerTestCase):
         self.assertIn("1470.8", body.replace(",", ""))    # xls 为 HTML 文本
 
 
+class CompareOnQuery(ServerTestCase):
+    """Task 15：compare 对比差值（环比语义，两个数据集 report 走 /q）。"""
+
+    def _compare_report(self, rid="cmp1", extra=None):
+        rec = {"name": "对比", "params": [], "cache_ttl": 0,
+               "datasets": [
+                   {"name": "cur", "ds": "demo",
+                    "sql": "SELECT region, SUM(amount) AS amount FROM orders GROUP BY region ORDER BY region"},
+                   {"name": "last", "ds": "demo",
+                    "sql": "SELECT region, SUM(amount) AS amount FROM orders WHERE order_id <> 'O5' GROUP BY region ORDER BY region"}],
+               "compare": {"dataset": "last", "on": ["region"], "metric": "amount", "label": "上月"}}
+        if extra:
+            rec.update(extra)
+        self.save_report(rec, rid)
+
+    def _q(self, rid="cmp1"):
+        st, body = self.req("POST", f"/q/{rid}", "page=1",
+                            "application/x-www-form-urlencoded")
+        self.assertEqual(st, 200, body)
+        return json.loads(body)
+
+    def test_compare_diff_and_rate(self):
+        # cur：华东 350.5 / 华北 121.3 / 华南 999.0；last（去 O5）：华东 350.5 / 华北 88.0 / 华南 999.0
+        self._compare_report()
+        j = self._q()
+        self.assertEqual(j["columns"],
+                         ["region", "amount", "amount(上月)差值", "amount(上月)增长率%"])
+        self.assertEqual(j["rows"][0][0], "华东")
+        self.assertAlmostEqual(j["rows"][0][-2], 0.0)
+        self.assertAlmostEqual(j["rows"][0][-1], 0.0)
+        self.assertEqual(j["rows"][1][0], "华北")
+        self.assertAlmostEqual(j["rows"][1][-2], 33.3)
+        self.assertAlmostEqual(j["rows"][1][-1], 37.8)
+        self.assertEqual(j["rows"][2][0], "华南")
+        self.assertAlmostEqual(j["rows"][2][-2], 0.0)
+        self.assertEqual(j["coltypes"], ["str", "num", "num", "num"])
+
+    def test_compare_table_block_has_diff_cols(self):
+        self._compare_report()
+        j = self._q()
+        b = j["blocks"][0]
+        self.assertEqual(b["type"], "table")
+        self.assertIn("amount(上月)增长率%", b["columns"])
+        self.assertEqual(len(b["rows"]), 3)
+
+    def test_compare_cache_exempt(self):
+        # 含 compare 报表同 pivot/hist 触发缓存豁免：两次 /q 均 cached=False 且 diff 列完整
+        self._compare_report("cmp2", {"cache_ttl": 60})
+        for _ in range(2):
+            j = self._q("cmp2")
+            self.assertFalse(j["cached"])
+            self.assertIn("amount(上月)差值", j["columns"])
+
+    def test_compare_export_contains_diff_cols(self):
+        self._compare_report("cmp3")
+        st, body = self.get("/r/cmp3/export")
+        self.assertEqual(st, 200)
+        self.assertIn("amount(上月)增长率%", body)
+        self.assertIn("37.8", body.replace(",", ""))
+
+    def test_no_compare_backward_compat(self):
+        # 兼容对：无 compare 键 → 两数据集报表响应与 M2 完全一致（无差值/增长率列）
+        rec = {"name": "兼容", "params": [], "cache_ttl": 0,
+               "datasets": [
+                   {"name": "a", "ds": "demo", "sql": "SELECT region FROM orders"},
+                   {"name": "b", "ds": "demo", "sql": "SELECT region FROM orders"}]}
+        self.save_report(rec, "cmp4")
+        j = self._q("cmp4")
+        self.assertNotIn("差值", j["columns"])
+        self.assertNotIn("增长率", j["columns"])
+        self.assertEqual(len(j["rows"]), 10)   # 仍为 union 合并
+
+    def test_save_compare_missing_required_rejected(self):
+        rec = {"name": "坏对比", "ds": "demo", "sql": "SELECT 1",
+               "compare": {"dataset": "last", "on": ["region"]}}   # 缺 metric
+        st, body = self.post_json("/save", {"id": "badcmp", **rec})
+        j = json.loads(body)
+        self.assertEqual(st, 200)
+        self.assertIn("error", j)
+        self.assertFalse(os.path.exists(os.path.join(self.reports_dir, "badcmp.json")))
+
+    def test_compare_missing_dataset_rejected(self):
+        self._compare_report("cmp5", {"compare": {"dataset": "ghost", "on": ["region"],
+                                                  "metric": "amount", "label": "上月"}})
+        st, body = self.req("POST", "/q/cmp5", "page=1",
+                            "application/x-www-form-urlencoded")
+        j = json.loads(body)
+        self.assertIn("error", j)
+        self.assertIn("compare 引用的数据集不存在", j["error"])
+
+
 class BlocksViewAndExport(ServerTestCase):
     """Task 12：查看页多块渲染 / 导出多块 / 编辑器 blocks 配置（服务端可测面）。"""
 

@@ -14,7 +14,7 @@ from sqlreport import views_report
 from sqlreport.db import CACHE, DS_STORE, load_json, run_query, merge_union, merge_lookup
 from sqlreport.params import build_values, substitute, normalize_report, esc, normalize_blocks
 from sqlreport.analytics import (total_row, summary_metrics, top_n_rows, add_share_columns,
-                                 bucket_column, pivot)
+                                 bucket_column, pivot, diff_merge)
 from sqlreport.views_report import PAGE, nav, page, esc_html
 
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -428,6 +428,16 @@ updType();
                 rec[k] = data[k]
         if isinstance(data.get("blocks"), list):
             rec["blocks"] = normalize_blocks(data)  # 经 normalize_blocks 校验（类型白名单 + pivot 必填键）
+        # compare 对比差值（Task 15）：dataset/on/metric 必填，label 可选
+        if isinstance(data.get("compare"), dict):
+            c = data["compare"]
+            on = c.get("on")
+            if not c.get("dataset") or not isinstance(on, list) or not on or not c.get("metric"):
+                raise ValueError("compare 需要 dataset/on/metric 必填键")
+            rec["compare"] = {"dataset": str(c["dataset"]),
+                              "on": [str(x) for x in on],
+                              "metric": str(c["metric"]),
+                              "label": str(c.get("label") or "")}
         # 双格式兼容：归一化后仅 1 个数据集 → 写回旧 {ds, sql} 格式（旧文件 diff 稳定）；≥2 个才写 datasets
         datasets = normalize_report(data, DS_STORE.visible_names())
         if len(datasets) == 1:
@@ -652,9 +662,10 @@ updType();
         values = build_values("", r.get("params", []), given)
         flt = self._auto_filters(r, datasets, given)
         blocks_cfg = normalize_blocks(r)
-        # 缓存豁免（决策 D2 / Task 11 Step 3.5）：含非 table 块（pivot/hist）的报表不使用结果缓存——
-        # 缓存里只有主表行，命中路径拿不到 pivot/hist 所需的各 dataset 原始结果，故将 cache_ttl 视为 0（不读不写）。
-        if any(b.get("type") != "table" for b in blocks_cfg):
+        # 缓存豁免（决策 D2 / Task 11 Step 3.5 / Task 15）：含非 table 块（pivot/hist）或含 compare
+        # 的报表不使用结果缓存——缓存里只有主表行，命中路径拿不到各 dataset 原始结果
+        # （compare 需要第二个数据集结果做对齐），故将 cache_ttl 视为 0（不读不写）。
+        if any(b.get("type") != "table" for b in blocks_cfg) or isinstance(r.get("compare"), dict):
             ttl = 0
         else:
             ttl = int(r.get("cache_ttl") or 0)  # 0 = 不缓存（实时）
@@ -676,6 +687,10 @@ updType();
                 results[d["name"]] = (cols, rows, coltypes)
                 fetch_truncated = fetch_truncated or tr
             cols, rows, coltypes = self._merge_results(r, datasets, results)
+            if isinstance(r.get("compare"), dict):
+                # Task 15：compare 报表主表 = datasets 第一个数据集原始结果（不走合并/不依赖缓存），
+                # 右侧取 compare.dataset 指定的另一数据集原始结果
+                cols, rows, coltypes = results[datasets[0]["name"]]
             ovr = {c.get("name"): c.get("type") for c in (r.get("columns") or [])
                    if c.get("type") in ("num", "date", "str")}
             if ovr:
@@ -690,8 +705,17 @@ updType();
         # ---- 分析管道（D2/D5：基于最终返回行集；缓存命中时同样重算，代价 O(n)）----
         if isinstance(r.get("bucket"), dict) and r["bucket"].get("col") in cols:
             rows = bucket_column(cols, rows, r["bucket"]["col"], r["bucket"].get("unit", "month"))
-        if isinstance(r.get("compare"), dict):   # M3 Task 15 落地处，M1 先留空位注释
-            pass
+        if isinstance(r.get("compare"), dict):   # Task 15：对比差值（bucket 之后、top_n 之前，决策 D5）
+            cmp_cfg = r["compare"]
+            ds = str(cmp_cfg.get("dataset") or "")
+            if ds not in results:
+                raise ValueError(f"compare 引用的数据集不存在: {ds}")
+            rcols, rrows, rtypes = results[ds]
+            cols, rows, coltypes = diff_merge(cols, rows, rcols, rrows,
+                                              cmp_cfg.get("on") or [],
+                                              str(cmp_cfg.get("metric") or ""),
+                                              label=str(cmp_cfg.get("label") or ""),
+                                              base_types=coltypes)
         if isinstance(r.get("top_n"), dict) and "col" in r["top_n"]:
             try:
                 rows = top_n_rows(cols, rows, coltypes, r["top_n"]["col"],

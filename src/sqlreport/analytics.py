@@ -277,3 +277,103 @@ def pivot(cols, rows, coltypes, row, col, value, agg="sum",
         pcols = pcols + ["合计"]
         ptypes = ptypes + ["num"]
     return pcols, prows, ptypes
+
+
+def diff_merge(base_cols, base_rows, right_cols, right_rows, on, metric, label="",
+               base_types=None):
+    """对比差值（环比语义）：以 on 列为键对齐 base 与 right，为 base 追加
+    「{metric}({label})差值」「{metric}({label})增长率%」两列。
+
+    - 对齐复用 db.merge_lookup 的哈希思路但独立实现（保持本模块无 db 依赖）：右侧建 dict，
+      键取 str 元组，重复键取首条（后写不覆盖）；行序保持 base 首现序，右侧缺失键的行
+      差值/增长率留空 ""（左对齐口径，同 merge_lookup）。
+    - rate = round((b-r)/r*100, 1)；r 为 0 或缺失（含 b 缺失）时增长率/差值留空 ""。
+    - on 列在 base/right 任一缺失抛中文 ValueError；base_types 提供时校验 metric 列须为 num。
+    - metric 列名不在 base_cols 时视为 base 末列（比较场景主表末列为指标列，见 server 集成）。
+    返回 (cols, rows, types)，不改入参。"""
+    on = [k for k in (on or []) if k]
+    if not on:
+        raise ValueError("compare 需要指定 on 关联键（可多列）")
+    bidx, ridx = [], []
+    for k in on:
+        if k not in base_cols:
+            raise ValueError(f"compare 主表缺少关联键列: {k}")
+        if k not in right_cols:
+            raise ValueError(f"compare 右侧数据集缺少关联键列: {k}")
+        bidx.append(base_cols.index(k))
+        ridx.append(right_cols.index(k))
+    bmi = base_cols.index(metric) if metric in base_cols else len(base_cols)
+    rmi = right_cols.index(metric) if metric in right_cols else len(right_cols)
+    if base_types is not None and bmi < len(base_types) and base_types[bmi] != "num":
+        raise ValueError(f"compare metric 列必须是数值列: {metric}")
+    # 右侧哈希：键取 str 元组；重复键取首条
+    right_map = {}
+    for r in right_rows:
+        key = tuple(str(r[i]) for i in ridx)
+        if key not in right_map:
+            right_map[key] = _to_num(r[rmi]) if rmi < len(r) else None
+    out = []
+    for r in base_rows:
+        key = tuple(str(r[i]) for i in bidx)
+        bv = _to_num(r[bmi]) if bmi < len(r) else None
+        rv = right_map.get(key)
+        if bv is None or rv is None:
+            diff = rate = ""
+        else:
+            diff = bv - rv
+            rate = round((bv - rv) / rv * 100, 1) if rv else ""
+        row = [r[i] for i in range(len(base_cols))]
+        if metric not in base_cols:
+            row.append(r[bmi] if bmi < len(r) else "")
+        row.append(diff)
+        row.append(rate)
+        out.append(row)
+    out_cols = list(base_cols)
+    if metric not in base_cols:
+        out_cols.append(metric)
+    out_cols += [f"{metric}({label})差值", f"{metric}({label})增长率%"]
+    out_types = list(base_types) if base_types is not None else ["str"] * len(base_cols)
+    if metric not in base_cols:
+        out_types.append("num")
+    out_types += ["num", "num"]
+    return out_cols, out, out_types
+
+
+def _bin_num(v):
+    """分箱边界标签：整数值去小数尾（1.0→1），否则保留（含 6 位舍入去浮点噪声）。"""
+    v = round(v, 6)
+    return str(int(v)) if float(v).is_integer() else str(v)
+
+
+def bin_numeric(cols, rows, coltypes, col, bins=10):
+    """数值等宽分箱统计表：把数值列 col 划分为 bins 个等宽区间，返回 [区间, 计数, 占比%] 表。
+
+    - 空值行不计入（不报错）；列值全为空（无有效数值）抛中文 ValueError。
+    - hi == lo 退化为单区间；左闭右开、末箱右闭；区间标签 "a ~ b"。
+    返回 (cols, rows, types) = (["区间","计数","占比%"], [[区间,计数,占比%],...], ["str","num","num"])，
+    不改入参。"""
+    i = _col_index(cols, col, "bin ")
+    if coltypes[i] not in _NUM_COLTYPES:
+        raise ValueError(f"bin 列必须是数值列: {col}")
+    vals = [_to_num(r[i]) for r in rows if i < len(r)]
+    vals = [v for v in vals if v is not None]
+    if not vals:
+        raise ValueError(f"分箱列无有效数值: {col}")
+    lo, hi = min(vals), max(vals)
+    if hi == lo:
+        bounds = [(lo, hi, True)]
+    else:
+        n = max(int(bins), 1)
+        width = (hi - lo) / n
+        bounds = [(lo + k * width, lo + (k + 1) * width, False) for k in range(n)]
+        bounds[-1] = (bounds[-1][0], bounds[-1][1], True)  # 末箱右闭
+    total = len(vals)
+    out = []
+    for a, b, right_closed in bounds:
+        if right_closed:
+            cnt = sum(1 for v in vals if a <= v <= b)
+        else:
+            cnt = sum(1 for v in vals if a <= v < b)
+        pct = round(cnt / total * 100, 1)
+        out.append([f"{_bin_num(a)} ~ {_bin_num(b)}", cnt, pct])
+    return ["区间", "计数", "占比%"], out, ["str", "num", "num"]

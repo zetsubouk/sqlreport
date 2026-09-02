@@ -7,7 +7,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from analytics import (total_row, _to_num, summary_metrics, top_n_rows,
-                       add_share_columns, bucket_column, pivot)
+                       add_share_columns, bucket_column, pivot, diff_merge, bin_numeric)
 
 COLS = ["区域", "金额", "单数"]
 TYPES = ["str", "num", "num"]
@@ -193,3 +193,97 @@ class TestPivot(unittest.TestCase):
         snapshot = [list(r) for r in P_ROWS]
         pivot(P_COLS, P_ROWS, P_TYPES, "区域", "产品", "金额")
         self.assertEqual(P_ROWS, snapshot)
+
+
+class TestDiffMerge(unittest.TestCase):
+    def test_diff_and_rate(self):
+        base = [["华东", 110.0], ["华北", 90.0]]
+        right = [["华东", 100.0]]
+        cols, rows, types = diff_merge(["区域"], base, ["区域"], right, ["区域"], "金额",
+                                       label="上月")
+        self.assertEqual(cols, ["区域", "金额", "金额(上月)差值", "金额(上月)增长率%"])
+        self.assertEqual(rows[0], ["华东", 110.0, 10.0, 10.0])
+        self.assertEqual(rows[1], ["华北", 90.0, "", ""])   # 右侧缺失
+
+    def test_metric_in_cols_no_duplicate(self):
+        base = [["华东", 110.0]]
+        right = [["华东", 100.0]]
+        cols, rows, types = diff_merge(["区域", "金额"], base, ["区域", "金额"], right,
+                                       ["区域"], "金额", label="上月",
+                                       base_types=["str", "num"])
+        self.assertEqual(cols, ["区域", "金额", "金额(上月)差值", "金额(上月)增长率%"])
+        self.assertEqual(rows[0], ["华东", 110.0, 10.0, 10.0])
+        self.assertEqual(types, ["str", "num", "num", "num"])
+
+    def test_zero_right_metric_blank_rate(self):
+        base = [["A", 100.0]]
+        right = [["A", 0.0]]
+        _, rows, _ = diff_merge(["区域"], base, ["区域"], right, ["区域"], "金额", label="上月")
+        self.assertEqual(rows[0][-2], 100.0)   # diff = 100 - 0
+        self.assertEqual(rows[0][-1], "")      # r 为 0 → 增长率留空
+
+    def test_str_key_alignment(self):
+        # 键取 str 元组：右侧 "1" 与 base 1 视为同键
+        base = [[1, 110.0]]
+        right = [["1", 100.0]]
+        _, rows, _ = diff_merge(["区域"], base, ["区域"], right, ["区域"], "金额", label="上月")
+        self.assertEqual(rows[0][-2], 10.0)
+
+    def test_metric_must_be_num(self):
+        with self.assertRaises(ValueError):
+            diff_merge(["区域", "金额"], [["华东", "x"]], ["区域", "金额"], [["华东", 1.0]],
+                       ["区域"], "金额", label="上月", base_types=["str", "str"])
+
+    def test_missing_on_rejected(self):
+        with self.assertRaises(ValueError):
+            diff_merge(["区域"], [["华东", 1.0]], ["区域"], [["华东", 1.0]], ["不存在"], "金额")
+
+    def test_right_missing_on_rejected(self):
+        with self.assertRaises(ValueError):
+            diff_merge(["区域"], [["华东", 1.0]], ["其他"], [["华东", 1.0]], ["区域"], "金额")
+
+    def test_input_not_mutated(self):
+        base = [["华东", 110.0], ["华北", 90.0]]
+        snapshot = [list(r) for r in base]
+        diff_merge(["区域"], base, ["区域"], [["华东", 100.0]], ["区域"], "金额", label="上月")
+        self.assertEqual(base, snapshot)
+
+
+class TestBin(unittest.TestCase):
+    def test_equal_width(self):
+        rows = [[1.0], [2.0], [3.0], [10.0]]
+        cols, out, types = bin_numeric(["v"], rows, ["num"], "v", bins=3)
+        self.assertEqual(cols, ["区间", "计数", "占比%"])
+        self.assertEqual(types, ["str", "num", "num"])
+        self.assertEqual(sum(r[1] for r in out), 4)
+        self.assertAlmostEqual(sum(r[2] for r in out), 100.0, delta=0.3)
+
+    def test_all_empty_rejected(self):
+        with self.assertRaises(ValueError):
+            bin_numeric(["v"], [[None]], ["num"], "v")
+
+    def test_null_rows_skipped(self):
+        rows = [[1.0], [None], [""], [2.0]]
+        _, out, _ = bin_numeric(["v"], rows, ["num"], "v", bins=2)
+        self.assertEqual(sum(r[1] for r in out), 2)
+
+    def test_single_interval_when_hi_equals_lo(self):
+        cols, out, _ = bin_numeric(["v"], [[5.0], [5.0], [None]], ["num"], "v", bins=10)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0][1], 2)
+        self.assertAlmostEqual(out[0][2], 100.0)
+
+    def test_last_bin_right_closed(self):
+        rows = [[1.0], [10.0]]
+        _, out, _ = bin_numeric(["v"], rows, ["num"], "v", bins=2)
+        self.assertEqual(sum(r[1] for r in out), 2)   # 上界 10 落在末箱（右闭）
+
+    def test_non_num_col_rejected(self):
+        with self.assertRaises(ValueError):
+            bin_numeric(["v"], [["a"]], ["str"], "v")
+
+    def test_input_not_mutated(self):
+        rows = [[1.0], [2.0]]
+        snapshot = [list(r) for r in rows]
+        bin_numeric(["v"], rows, ["num"], "v", bins=2)
+        self.assertEqual(rows, snapshot)
