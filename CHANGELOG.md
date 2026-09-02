@@ -3,6 +3,19 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化。
 最新变更置顶。
 
+## [v0.4.0] - 2026-09-03
+
+### 新增
+- **分析层** `src/sqlreport/analytics.py`（纯函数，与 params.py 同风格）：合计行 `total_row`、KPI 摘要指标 `summary_metrics`（sum/avg/count/max/min）、Top N + 其他归并 `top_n_rows`、占比/累计占比列 `add_share_columns`、时间分桶 `bucket_column`（月/季/周）
+- **报表分析配置**（JSON 顶层可选键，缺省完全兼容）：`total`（合计行，可配 label/label_col）、`summary`（KPI 指标数组）、`top_n`（Top N + 其他归并）、`share`（占比 + 累计占比列）、`bucket`（日期列按月/季/周分桶）；`/save` 白名单同步接纳并做最小结构校验
+- **查看页增强**：KPI 摘要卡片区（复用 `.stat` 样式）、表格合计行（`<tfoot>`，分页每页底部渲染）、数值列右对齐 + 千分位格式化（仅 num 列，字符串 ID 不受影响）、参数口径回显（"参数：k=v" + "基于 N 行计算"）、点列头排序（num 数值 / str 拼音分型比较，▲/▼ 指示）
+- **导出同步**：xls/csv 附带合计行、KPI 摘要文本；数值列输出 `mso-number-format` 真数值（Excel 可计算）
+- **分析管道顺序**（决策 D5）：bucket → top_n → share → total/summary；缓存命中时基于缓存行同样重算（口径=所见=导出）
+
+### 兼容性
+- `/q` 响应固定新增 `total_row`（None 或行数组）与 `summary`（数组）两键，旧键含义不变，旧前端忽略新键不受影响
+- 旧报表（无任何分析键）行为与 v0.3 完全一致；`_execute_report` 收敛为单一 return，缓存命中路径同样走分析管道
+
 ## [v0.3.0] - 2026-09-02
 
 ### 新增

@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from sqlreport.db import CACHE, DS_STORE, load_json, run_query, merge_union, merge_lookup
 from sqlreport.params import build_values, substitute, normalize_report, esc
 from sqlreport.analytics import total_row, summary_metrics, top_n_rows, add_share_columns, bucket_column
+from sqlreport import __version__
 
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPORTS_DIR = os.path.join(BASE, "reports")
@@ -297,7 +298,7 @@ def nav(active=""):
         links += f'<a href="{href}"{cls}>{name}</a>'
     return f'<nav class="nav"><div class="nav-inner"><div class="brand"><span class="logo">SQ</span>SQL 报表</div>' \
            f'<div class="nav-links">{links}</div>' \
-           f'<div class="nav-right"><span class="badge"><span class="dot"></span>服务运行中</span><span class="version">v0.3.0</span></div></div></nav>'
+           f'<div class="nav-right"><span class="badge"><span class="dot"></span>服务运行中</span><span class="version">v{__version__}</span></div></div></nav>'
 
 def page(title, body, script="", active=""):
     return PAGE.replace("__TITLE__", title).replace("__NAV__", nav(active)) \
