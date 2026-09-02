@@ -209,6 +209,11 @@ function tblInit(out){
   out.addEventListener('change',function(e){
     if(e.target&&e.target.classList&&e.target.classList.contains('ppage'))tblGo(out,1);});
   out.addEventListener('click',function(e){
+    var th=e.target&&e.target.closest?e.target.closest('th[data-si]'):null;
+    if(th){
+      var i=parseInt(th.getAttribute('data-si'),10),s=out._st.sort;
+      out._st.sort={i:i,desc:(s&&s.i===i)?!s.desc:true};  // 同列切换升降序，切列重置为降序
+      tblDraw(out);return;}
     var b=e.target&&e.target.closest?e.target.closest('[data-pg]'):null;
     if(b&&!b.disabled)tblGo(out,parseInt(b.getAttribute('data-pg'),10));});
 }
@@ -217,9 +222,21 @@ function tblDraw(out){
   var st=out._st;
   var psel=out.querySelector('.ppage');
   var ps=(psel?parseInt(psel.value,10):0)||st.defPage;
-  var total=st.rows.length,pages=Math.max(1,Math.ceil(total/ps));
+  var rows=st.rows;
+  if(st.sort){
+    var si=st.sort.i,desc=st.sort.desc,cts=st.ct;
+    rows=st.rows.slice().sort(function(a,b){
+      var r;
+      if(cts[si]==='num'){
+        var an=parseFloat(String(a[si]).replace(/,/g,''));if(isNaN(an))an=-Infinity;
+        var bn=parseFloat(String(b[si]).replace(/,/g,''));if(isNaN(bn))bn=-Infinity;
+        r=an-bn;
+      }else{r=String(a[si]).localeCompare(String(b[si]),'zh-CN');}
+      return desc?-r:r;});
+  }
+  var total=rows.length,pages=Math.max(1,Math.ceil(total/ps));
   if(st.page>pages)st.page=pages;
-  var start=(st.page-1)*ps,end=Math.min(start+ps,total),slice=st.rows.slice(start,end);
+  var start=(st.page-1)*ps,end=Math.min(start+ps,total),slice=rows.slice(start,end);
   var fmt=function(v,i){
     if(st.ct[i]==='num'&&v!==''&&v!=null){
       var n=parseFloat(String(v).replace(/,/g,''));
@@ -227,7 +244,9 @@ function tblDraw(out){
     return '<td>'+escHtml(v)+'</td>';};
   var h='';
   if(st.status)h+='<div class="statusline">'+st.status+'</div>';
-  h+='<div class="table-wrap"><table><thead><tr>'+st.cols.map(function(c){return '<th>'+escHtml(c)+'</th>';}).join('')+'</tr></thead><tbody>';
+  h+='<div class="table-wrap"><table><thead><tr>'+st.cols.map(function(c,i){
+    var ind=st.sort&&st.sort.i===i?(st.sort.desc?' ▼':' ▲'):'';
+    return '<th data-si="'+i+'" style="cursor:pointer">'+escHtml(c)+'<span style="color:var(--text-muted);font-size:10px">'+ind+'</span></th>';}).join('')+'</tr></thead><tbody>';
   h+=slice.map(function(r){return '<tr>'+r.map(fmt).join('')+'</tr>';}).join('');
   h+='</tbody>';
   if(st.total)h+='<tfoot><tr>'+st.total.map(fmt).join('')+'</tr></tfoot>';
