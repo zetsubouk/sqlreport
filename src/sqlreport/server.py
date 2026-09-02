@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from sqlreport.db import CACHE, DS_STORE, load_json, run_query, merge_union, merge_lookup
 from sqlreport.params import build_values, substitute, normalize_report, esc
+from sqlreport.analytics import total_row, summary_metrics, top_n_rows, add_share_columns, bucket_column
 
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPORTS_DIR = os.path.join(BASE, "reports")
@@ -1143,6 +1144,16 @@ loadOptions().then(function(){
         if data.get("query_mode") in ("auto", "manual"):
             rec["query_mode"] = data["query_mode"]  # auto=打开自动查询；manual=手动查询
         rec["page_size"] = max(int(data.get("page_size") or 20), 1)  # 结果每页行数
+        # 分析键白名单（决策 D10：白名单外的键会被静默丢弃，故每键落地时同步加入并做最小结构校验）
+        if isinstance(data.get("total"), dict):
+            rec["total"] = {"label": str(data["total"].get("label", "合计")),
+                            "label_col": int(data["total"].get("label_col", 0) or 0)}
+        if isinstance(data.get("summary"), list):
+            rec["summary"] = [m for m in data["summary"]
+                              if isinstance(m, dict) and m.get("col")]
+        for k in ("top_n", "share", "bucket"):
+            if isinstance(data.get(k), dict) and data[k].get("col"):
+                rec[k] = data[k]
         # 双格式兼容：归一化后仅 1 个数据集 → 写回旧 {ds, sql} 格式（旧文件 diff 稳定）；≥2 个才写 datasets
         datasets = normalize_report(data, DS_STORE.visible_names())
         if len(datasets) == 1:
@@ -1368,34 +1379,61 @@ loadOptions().then(function(){
         flt = self._auto_filters(r, datasets, given)
         ttl = int(r.get("cache_ttl") or 0)  # 0 = 不缓存（实时）
         key = CACHE.make_key(rid, values) if ttl > 0 else None
+        cached = False
         if key:
             hit = CACHE.get(key)
             if hit:
-                cols, rows, tr_hit, ct_hit = hit
-                return {"columns": cols, "rows": rows, "coltypes": ct_hit, "truncated": tr_hit,
-                        "cached": True, "elapsed_ms": int((time.time() - t0) * 1000)}
-        results, fetch_truncated = {}, False
-        for d in datasets:
-            sql = substitute(d["sql"], values)
-            conds = flt.get(d["name"])
-            if conds:
-                sql = f"SELECT * FROM ({sql}) __flt WHERE " + " AND ".join(conds)
-            cols, rows, tr, coltypes = run_query(d["ds"], sql)
-            results[d["name"]] = (cols, rows, coltypes)
-            fetch_truncated = fetch_truncated or tr
-        cols, rows, coltypes = self._merge_results(r, datasets, results)
-        ovr = {c.get("name"): c.get("type") for c in (r.get("columns") or [])
-               if c.get("type") in ("num", "date", "str")}
-        if ovr:
-            coltypes = [ovr.get(c, t) for c, t in zip(cols, coltypes)]
-        max_rows = int(r.get("max_rows") or 2000)
-        truncated = fetch_truncated or len(rows) > max_rows
-        if len(rows) > max_rows:
-            rows = rows[:max_rows]
-        if key:
-            CACHE.put(key, cols, rows, ttl, truncated, coltypes)
+                cols, rows, truncated, coltypes = hit
+                cached = True
+        if not cached:
+            results, fetch_truncated = {}, False
+            for d in datasets:
+                sql = substitute(d["sql"], values)
+                conds = flt.get(d["name"])
+                if conds:
+                    sql = f"SELECT * FROM ({sql}) __flt WHERE " + " AND ".join(conds)
+                cols, rows, tr, coltypes = run_query(d["ds"], sql)
+                results[d["name"]] = (cols, rows, coltypes)
+                fetch_truncated = fetch_truncated or tr
+            cols, rows, coltypes = self._merge_results(r, datasets, results)
+            ovr = {c.get("name"): c.get("type") for c in (r.get("columns") or [])
+                   if c.get("type") in ("num", "date", "str")}
+            if ovr:
+                coltypes = [ovr.get(c, t) for c, t in zip(cols, coltypes)]
+            max_rows = int(r.get("max_rows") or 2000)
+            truncated = fetch_truncated or len(rows) > max_rows
+            if len(rows) > max_rows:
+                rows = rows[:max_rows]
+            if key:
+                CACHE.put(key, cols, rows, ttl, truncated, coltypes)
+        elapsed_ms = int((time.time() - t0) * 1000)
+        # ---- 分析管道（D2/D5：基于最终返回行集；缓存命中时同样重算，代价 O(n)）----
+        if isinstance(r.get("bucket"), dict) and r["bucket"].get("col") in cols:
+            rows = bucket_column(cols, rows, r["bucket"]["col"], r["bucket"].get("unit", "month"))
+        if isinstance(r.get("compare"), dict):   # M3 Task 15 落地处，M1 先留空位注释
+            pass
+        if isinstance(r.get("top_n"), dict) and "col" in r["top_n"]:
+            try:
+                rows = top_n_rows(cols, rows, coltypes, r["top_n"]["col"],
+                                  n=int(r["top_n"].get("n", 10)),
+                                  others=str(r["top_n"].get("others", "其他")))
+            except ValueError:
+                pass  # 配置列缺失/类型不符时静默跳过，不阻断出数
+        if isinstance(r.get("share"), dict) and "col" in r["share"]:
+            try:
+                cols, rows, coltypes = add_share_columns(cols, rows, coltypes, r["share"]["col"])
+            except ValueError:
+                pass
+        tr_cfg = r.get("total")
+        if isinstance(tr_cfg, dict):
+            total = total_row(cols, rows, coltypes,
+                              label=str(tr_cfg.get("label", "合计")),
+                              label_col=int(tr_cfg.get("label_col", 0) or 0))
+        else:
+            total = None
+        summary = summary_metrics(cols, rows, coltypes, r.get("summary")) if r.get("summary") else []
         return {"columns": cols, "rows": rows, "coltypes": coltypes, "truncated": truncated,
-                "cached": False, "elapsed_ms": int((time.time() - t0) * 1000)}
+                "cached": cached, "elapsed_ms": elapsed_ms, "total_row": total, "summary": summary}
 
     def _query(self, rid, given):
         r = self._load_report(rid)

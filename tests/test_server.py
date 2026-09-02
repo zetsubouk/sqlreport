@@ -311,5 +311,57 @@ class ServerTestCase(unittest.TestCase):
         self.assertIn("页面", body)
 
 
+class AnalysisOnQuery(ServerTestCase):
+    def _save_report(self, extra):
+        rec = {"name": "分析报表", "ds": "demo",
+               "sql": "SELECT order_id, region, amount, dt FROM orders ORDER BY order_id"}
+        rec.update(extra)
+        self.save_report(rec, "analysis1")
+
+    def _q(self):
+        st, body = self.req("POST", "/q/analysis1", "page=1",
+                            "application/x-www-form-urlencoded")
+        self.assertEqual(st, 200)
+        return json.loads(body)
+
+    def test_total_and_summary_in_q(self):
+        self._save_report({
+            "total": {"label": "合计"},
+            "summary": [{"col": "amount", "fn": "sum", "label": "销售额"},
+                        {"col": "order_id", "fn": "count", "label": "单数"}]})
+        j = self._q()
+        self.assertEqual(j["total_row"][0], "合计")
+        self.assertAlmostEqual(j["total_row"][2], 1470.8)   # amount 是第 3 列
+        self.assertEqual(j["summary"][0]["label"], "销售额")
+        self.assertAlmostEqual(j["summary"][0]["value"], 1470.8)
+        self.assertEqual(j["summary"][1], {"label": "单数", "value": 5})
+
+    def test_top_n_and_share(self):
+        self._save_report({"top_n": {"col": "amount", "n": 2}, "share": {"col": "amount"}})
+        j = self._q()
+        self.assertEqual(len(j["rows"]), 3)          # 2 行 + 其他
+        self.assertEqual(j["rows"][2][0], "其他")
+        self.assertEqual(j["columns"][-2:], ["amount占比%", "amount累计%"])
+
+    def test_bucket_month(self):
+        self._save_report({"bucket": {"col": "dt", "unit": "month"}})
+        j = self._q()
+        self.assertEqual(j["rows"][0][3], "2026-01")  # dt 是第 4 列
+
+    def test_analysis_on_cache_hit(self):
+        self._save_report({"total": {"label": "合计"}, "cache_ttl": 60})
+        self._q()                                     # 第一次：写入缓存
+        j = self._q()                                 # 第二次：命中缓存
+        self.assertTrue(j["cached"])
+        self.assertAlmostEqual(j["total_row"][2], 1470.8)
+
+    def test_no_analysis_keys_backward_compat(self):
+        self._save_report({})
+        j = self._q()
+        self.assertIsNone(j.get("total_row"))         # 决策 D4：固定键，缺省 None/[]
+        self.assertEqual(j.get("summary"), [])
+        self.assertEqual(len(j["rows"]), 5)
+
+
 if __name__ == "__main__":
     unittest.main()
