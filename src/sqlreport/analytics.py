@@ -48,3 +48,40 @@ def total_row(cols, rows, coltypes, label="合计", label_col=0):
     if 0 <= label_col < len(cols):
         out[label_col] = label
     return out
+
+
+_FN_NAMES = {"sum": "合计", "avg": "平均", "count": "计数", "max": "最大", "min": "最小"}
+
+
+def summary_metrics(cols, rows, coltypes, metrics):
+    """KPI 摘要指标。metrics: [{"col": 列名, "fn": "sum|avg|count|max|min", "label": 可选}]
+    返回 [{"label", "value"}]；未知列跳过。
+    count 计该列非空值个数（任意列型可用）；sum/avg/max/min 仅对 coltypes=num 列生效。"""
+    out = []
+    for m in metrics or []:
+        col, fn = m.get("col", ""), m.get("fn", "sum")
+        if col not in cols:
+            continue
+        i = cols.index(col)
+        cells = [r[i] if i < len(r) else None for r in rows]
+        if fn == "count":
+            n = sum(1 for c in cells if c not in ("", None))
+            out.append({"label": m.get("label") or col + "计数", "value": n})
+            continue
+        if coltypes[i] not in _NUM_COLTYPES:
+            continue
+        nums = [v for v in (_to_num(c) for c in cells) if v is not None]
+        if not nums:
+            continue
+        if fn == "sum":
+            val = sum(nums)
+        elif fn == "avg":
+            val = sum(nums) / len(nums)
+        elif fn == "max":
+            val = max(nums)
+        elif fn == "min":
+            val = min(nums)
+        else:
+            continue
+        out.append({"label": m.get("label") or col + _FN_NAMES.get(fn, fn), "value": val})
+    return out
