@@ -11,8 +11,9 @@ import base64, json, os, re, secrets, sys, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from sqlreport.db import CACHE, DS_STORE, load_json, run_query, merge_union, merge_lookup
-from sqlreport.params import build_values, substitute, normalize_report, esc
-from sqlreport.analytics import total_row, summary_metrics, top_n_rows, add_share_columns, bucket_column
+from sqlreport.params import build_values, substitute, normalize_report, esc, normalize_blocks
+from sqlreport.analytics import (total_row, summary_metrics, top_n_rows, add_share_columns,
+                                 bucket_column, pivot)
 from sqlreport import __version__
 
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -1196,6 +1197,8 @@ loadOptions().then(function(){
         for k in ("top_n", "share", "bucket"):
             if isinstance(data.get(k), dict) and data[k].get("col"):
                 rec[k] = data[k]
+        if isinstance(data.get("blocks"), list):
+            rec["blocks"] = normalize_blocks(data)  # 经 normalize_blocks 校验（类型白名单 + pivot 必填键）
         # 双格式兼容：归一化后仅 1 个数据集 → 写回旧 {ds, sql} 格式（旧文件 diff 稳定）；≥2 个才写 datasets
         datasets = normalize_report(data, DS_STORE.visible_names())
         if len(datasets) == 1:
@@ -1419,7 +1422,13 @@ loadOptions().then(function(){
         datasets = normalize_report(r, DS_STORE.visible_names())
         values = build_values("", r.get("params", []), given)
         flt = self._auto_filters(r, datasets, given)
-        ttl = int(r.get("cache_ttl") or 0)  # 0 = 不缓存（实时）
+        blocks_cfg = normalize_blocks(r)
+        # 缓存豁免（决策 D2 / Task 11 Step 3.5）：含非 table 块（pivot/hist）的报表不使用结果缓存——
+        # 缓存里只有主表行，命中路径拿不到 pivot/hist 所需的各 dataset 原始结果，故将 cache_ttl 视为 0（不读不写）。
+        if any(b.get("type") != "table" for b in blocks_cfg):
+            ttl = 0
+        else:
+            ttl = int(r.get("cache_ttl") or 0)  # 0 = 不缓存（实时）
         key = CACHE.make_key(rid, values) if ttl > 0 else None
         cached = False
         if key:
@@ -1474,8 +1483,39 @@ loadOptions().then(function(){
         else:
             total = None
         summary = summary_metrics(cols, rows, coltypes, r.get("summary")) if r.get("summary") else []
+        # ---- blocks 构建（决策 D3/D4）：table 块 = 主结果 + M1 分析管道；pivot 块 = 指定 dataset 原始结果 ----
+        blocks = []
+        for b in blocks_cfg:
+            if b.get("type") == "table":
+                blocks.append({"type": "table", "title": b.get("title", ""),
+                               "columns": cols, "rows": rows, "coltypes": coltypes})
+                continue
+            ds_name = b.get("dataset")
+            if ds_name not in results:
+                raise ValueError(f"pivot 块引用的数据集不存在: {ds_name}")
+            bcols, brows, btypes = results[ds_name]
+            agg = str(b.get("agg") or "sum")
+            max_cols = int(b.get("max_cols") or 50)
+            col_total = bool(b.get("col_total", True))
+            if b.get("col"):
+                pcols, prows, ptypes = pivot(
+                    bcols, brows, btypes, str(b["row"]), str(b["col"]), str(b["value"]),
+                    agg=agg, row_total=bool(b.get("row_total", True)),
+                    col_total=col_total, max_cols=max_cols)
+            else:
+                # 单维汇总锁定形态：col 缺省时注入常量维度列「合计」（每行恒为「合计」）调用 pivot，
+                # row_total 强制 False → 列头 [row, "合计"]，不引入 __all__ 之类合成列名
+                bcols2 = list(bcols) + ["合计"]
+                btypes2 = list(btypes) + ["str"]
+                brows2 = [list(r) + ["合计"] for r in brows]
+                pcols, prows, ptypes = pivot(
+                    bcols2, brows2, btypes2, str(b["row"]), "合计", str(b["value"]),
+                    agg=agg, row_total=False, col_total=col_total, max_cols=max_cols)
+            blocks.append({"type": "pivot", "title": b.get("title", ""),
+                           "columns": pcols, "rows": prows, "coltypes": ptypes})
         return {"columns": cols, "rows": rows, "coltypes": coltypes, "truncated": truncated,
-                "cached": cached, "elapsed_ms": elapsed_ms, "total_row": total, "summary": summary}
+                "cached": cached, "elapsed_ms": elapsed_ms, "total_row": total,
+                "summary": summary, "blocks": blocks}
 
     def _query(self, rid, given):
         r = self._load_report(rid)

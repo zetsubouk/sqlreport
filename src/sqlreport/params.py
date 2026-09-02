@@ -92,3 +92,31 @@ def normalize_report(report, ds_names=None):
             if d["ds"] not in ds_names:
                 raise ValueError(f"数据集「{d['name']}」引用的数据源不存在或已禁用: {d['ds']}")
     return datasets
+
+
+_BLOCK_TYPES = ("table", "pivot")
+_PIVOT_REQUIRED = ("dataset", "row", "value")
+
+
+def normalize_blocks(report):
+    """报表 blocks 数组归一化（决策 D3/D10）：无 blocks → [{"type": "table"}]（零迁移）。
+
+    块类型白名单 table/pivot；pivot 必填 dataset/row/value（保存期校验，中文 ValueError）。
+    执行期才校验列名/列型（save 时无数据集结果）。原块对象原样透传（不改结构）。
+    """
+    blocks = report.get("blocks")
+    if not blocks:
+        return [{"type": "table"}]
+    out = []
+    for b in blocks:
+        if not isinstance(b, dict):
+            raise ValueError("blocks 每项必须是对象")
+        t = b.get("type")
+        if t not in _BLOCK_TYPES:
+            raise ValueError(f"不支持的块类型: {t}")
+        if t == "pivot":
+            missing = [k for k in _PIVOT_REQUIRED if not b.get(k)]
+            if missing:
+                raise ValueError("pivot 块缺少必填键: " + ", ".join(missing))
+        out.append(b)
+    return out

@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from params import esc, build_values, substitute, normalize_report
+from params import esc, build_values, substitute, normalize_report, normalize_blocks
 
 
 class TestEsc(unittest.TestCase):
@@ -115,6 +115,24 @@ class TestNormalizeReport(unittest.TestCase):
         ds = [{"name": "x", "ds": "ghost", "sql": "S"}]
         with self.assertRaises(ValueError):
             normalize_report({"datasets": ds}, ds_names={"real"})
+
+
+class TestNormalizeBlocks(unittest.TestCase):
+    def test_default_single_table(self):
+        self.assertEqual(normalize_blocks({}), [{"type": "table"}])
+
+    def test_valid_blocks_passthrough(self):
+        r = {"blocks": [{"type": "table", "title": "明细"},
+                        {"type": "pivot", "dataset": "a", "row": "region", "value": "amount"}]}
+        self.assertEqual(normalize_blocks(r), r["blocks"])
+
+    def test_bad_type_rejected(self):
+        with self.assertRaises(ValueError):
+            normalize_blocks({"blocks": [{"type": "chart"}]})
+
+    def test_pivot_missing_required_rejected(self):
+        with self.assertRaises(ValueError):
+            normalize_blocks({"blocks": [{"type": "pivot", "dataset": "a", "row": "r"}]})
 
 
 if __name__ == "__main__":

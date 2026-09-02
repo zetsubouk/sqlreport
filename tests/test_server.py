@@ -363,6 +363,52 @@ class AnalysisOnQuery(ServerTestCase):
         self.assertEqual(j.get("summary"), [])
         self.assertEqual(len(j["rows"]), 5)
 
+    def test_q_blocks_pivot(self):
+        rec = {"name": "交叉", "ds": "demo",
+               "sql": "SELECT region, amount FROM orders",
+               "blocks": [{"type": "pivot", "dataset": "main", "row": "region",
+                            "value": "amount", "agg": "sum", "title": "区域汇总"}]}
+        self.save_report(rec, "pivot1")
+        st, body = self.req("POST", "/q/pivot1", "page=1", "application/x-www-form-urlencoded")
+        self.assertEqual(st, 200)
+        j = json.loads(body)
+        b = j["blocks"][0]
+        self.assertEqual(b["type"], "pivot")
+        self.assertEqual(b["title"], "区域汇总")
+        self.assertEqual(b["columns"], ["region", "合计"])   # 单维汇总锁定形态（见下）
+        self.assertAlmostEqual([r for r in b["rows"] if r[0] == "华东"][0][1], 350.5)
+        # 顶层键仍为主表（向后兼容，决策 D4）
+        self.assertEqual(j["columns"], ["region", "amount"])
+
+    def test_blocks_default_table_backward_compat(self):
+        # 无 blocks 的旧报表：/q 响应 blocks == [{"type":"table",...主表...}] 且顶层键不变
+        self._save_report({})
+        j = self._q()
+        self.assertEqual(len(j["blocks"]), 1)
+        b = j["blocks"][0]
+        self.assertEqual(b["type"], "table")
+        self.assertEqual(b["columns"], j["columns"])
+        self.assertEqual(b["rows"], j["rows"])
+        self.assertEqual(b["coltypes"], j["coltypes"])
+
+    def test_cache_exempt_for_pivot_block(self):
+        # 守护红线：cache_ttl>0 + pivot 块 → 两次 /q 均 blocks 完整且 cached=False（不读不写缓存）
+        rec = {"name": "交叉缓存", "ds": "demo",
+               "sql": "SELECT region, amount FROM orders",
+               "cache_ttl": 60,
+               "blocks": [{"type": "pivot", "dataset": "main", "row": "region",
+                            "value": "amount", "agg": "sum"}]}
+        self.save_report(rec, "pivot2")
+        for _ in range(2):
+            st, body = self.req("POST", "/q/pivot2", "page=1",
+                                "application/x-www-form-urlencoded")
+            self.assertEqual(st, 200)
+            j = json.loads(body)
+            self.assertFalse(j["cached"])                       # 缓存豁免：不读不写
+            self.assertEqual(j["blocks"][0]["type"], "pivot")
+            self.assertEqual(j["blocks"][0]["columns"], ["region", "合计"])
+            self.assertEqual(len(j["blocks"][0]["rows"]), 4)    # 3 区域 + 总计行
+
     def test_export_contains_total(self):
         self._save_report({"total": {"label": "合计"}})
         st, body = self.req("GET", "/r/analysis1/export")
