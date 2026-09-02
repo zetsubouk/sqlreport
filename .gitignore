@@ -8,3 +8,4 @@ datasources.json
 
 # 测试数据与演示报表不入库（用户约定）
 reports/
+.DS_Store
