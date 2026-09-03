@@ -84,3 +84,82 @@
 - 修复（commit 1f7518c，最小改动）：_body() 按 Content-Type 统一返回标量字典（JSON 分支原样返回嵌套数组）；_flat() 收敛为 /q 专用幂等展平（仅对残留列表取首元素）。
 - QA 复测：15/15 PASS 闭环（JSON/form 结果一致、缓存 key 归一、/preview、/save 嵌套数组透传、只读校验、数据源保护 403）。
 - 排除 3 项疑似问题（均测试脚本问题）：JSON 参数形态须用生效参数 pid/pid_2；单数据集保存写回旧格式为设计约定；union 空参数被只读校验拒为既有可选条件语义。
+
+---
+
+> 以下为 2026-09-04 补记：DEVLOG 之前停在 v0.2，现依据 git 历史（commit 5f2e979 → 1d13d5c）与 CHANGELOG 还原 v0.3 → v0.9 条目。只增不改，既有内容不动。
+
+## 2026-09-02 ｜ v0.3 工程化（src 布局）
+
+### 实现
+- **src 布局**：源码迁入 `src/sqlreport/`，新增 `pyproject.toml`（setuptools src 布局，`pip install -e .`）；三种运行方式：`python server.py` / `python -m sqlreport` / `sqlreport` 命令行入口；根级 `server.py` / `db.py` / `params.py` 变为 `sys.modules` 转发 shim，旧导入零影响。
+- **测试纳入版本控制**：`tests/`（params/db 单测 + server 集成，共 86 例），导入兼容双入口（`sys.path` 插 `../src`，根级 shim 兜底）。
+- **运维与样例归档**：`scripts/start.bat`（探测 python/py/python3、端口检查、`start /min` 后台、日志 `logs\sqlreport.log`）+ `scripts/stop.bat`；样例配置归档 `examples/datasources.example.json`，根级副本移除。
+- **开发准则**：新增 `docs/DEVELOPMENT.md`（目录/分层/流程/测试/发布约定）与 `.trae/rules/project_rules.md`；架构图迁 `docs/diagrams/`。
+- **CI 升级**：`pip install -e .` + 编译检查 + `import sqlreport.*` 冒烟。
+
+### 修复
+- **查询结果取消千分位格式化（第一次）**：数字/ID 列不再 `toLocaleString('zh-CN')`（如 `-7341879067155610000` 原样输出，避免大整数精度丢失）。
+
+### 决策记录
+- 源码唯一可信位置定为 `src/sqlreport/`，根级只做转发、不堆业务逻辑（DEVELOPMENT.md §1 原则）。
+
+## 2026-09-03 ｜ v0.4 统计基础（分析层）
+
+### 实现（按 docs/PLAN-v0.4-v0.7.md 决策表 D1-D10 / 22 Task 先行规划，commit 24295d4）
+- **分析层骨架** `analytics.py`（纯函数，与 params.py 同风格）：`total_row` 合计行 → `summary_metrics` KPI 摘要（sum/avg/count/max/min）→ `top_n_rows` Top N + 其他归并 → `add_share_columns` 占比/累计占比列 → `bucket_column` 时间分桶（月/季/周）。
+- **分析管道**（决策 D5，顺序固定）：bucket → top_n → share → total/summary；`/q` 集成管道并扩展 `/save` 白名单（total/summary/top_n/share/bucket 可选键，缺省零迁移）；缓存命中路径同样重算（口径 = 所见 = 导出）。
+- **查看页增强**：KPI 摘要卡片区、表格合计行（`<tfoot>`）、数值列右对齐 + 千分位（仅 num 列）、参数口径回显、点列头排序（num 数值 / str 拼音分型，▲/▼ 指示）。
+- **导出同步**：xls/csv 附带合计行与 KPI 摘要文本，数值列 `mso-number-format` 真数值。
+
+### 决策记录
+- 分析函数一律纯函数、可独立单测；管道顺序写死 D5，避免各版本口径漂移。
+
+## 2026-09-03 ｜ v0.5 交叉分析（透视表 + 块化 + 视图拆分）
+
+### 实现
+- **透视表** `analytics.pivot`：row × col 交叉，agg 支持 sum/count/avg/max/min，小计列「合计」+ 总计行「总计」（avg 按底层原始值重算）；行/列维度去重后 > 50 拒绝执行（提示 SQL 层先归类）；None 与空串归并；单维汇总锁定时 col 缺省注入常量维度列。
+- **分析块化 Schema**：报表顶层可选 `blocks`（table / pivot），无 blocks → 单 table 块（零迁移）；`normalize_blocks` 保存期校验类型白名单与 pivot 必填键。
+- **多块报表**：`/q` 响应固定新增 `blocks`（块级 `{type,title,columns,rows,coltypes}`），查看页逐块渲染，导出 xls 按块输出（csv 仍仅主表）；编辑器新增「分析块（JSON）」配置区。
+- **视图层拆分**：页面模板迁至 `views_report.py`，server.py 保留薄转发，路由与业务方法不动。
+
+### 决策记录
+- 含非 table 块（pivot/hist）的报表不使用结果缓存（cache_ttl 视为 0）：缓存仅存主表行，命中路径拿不到各 dataset 原始结果（决策 D2 / Task 11 Step 3.5）。
+
+## 2026-09-03 ｜ v0.6 对比与维度
+
+### 实现
+- **对比差值** `analytics.diff_merge`：顶层可选 `compare`（`dataset` 第二数据集、`on` 关联键、`metric` 指标列、`label` 对比期标签），主表追加「差值」「增长率%」两列；右侧缺失留空、r=0 增长率留空、行序保持主表首现序；与非 table 块同享缓存豁免。
+- **数值分箱** `analytics.bin_numeric`：等宽分箱（hi==lo 退化单区间、左闭右开末箱右闭），输出 `[区间, 计数, 占比%]`，以 `hist` 块类型接入。
+- **保存视图** `views`：`[{name, params}]` 参数组合快捷链接（URL 即状态，无后端存储）；`/save` 白名单校验 name 非空、params 为字典。
+- **文档同步**（commit 93784ff）：CHANGELOG 统一 + PLAN 里程碑状态与实施计划索引。
+
+## 2026-09-03 ｜ v0.7 交付加固（Task 19-22 全部落地）
+
+### 实现
+- **真 .xlsx 导出**（P2-3 首选方案，未降级 openpyxl）：手写最小 xlsx 写出器（zip + inlineStr，零新依赖）；按 blocks 多 sheet（`summary` → 「摘要」sheet）；num 列 `_to_num` 真数值单元格；sheet 名清洗（非法字符/31 字符截断/重名 `-2` 后缀）；`export_format` 白名单接纳 `xlsx`（默认仍 `xls`，存量零变化）。
+- **打印样式**：PAGE 全局 `@media print`（隐藏导航/表单/按钮/分页条，表格全量铺开 + 网格线，KPI 卡 `break-inside:avoid`）。
+- **token 鉴权**（P2-2）：`config.json {"auth": "token", "token_secret": "…"}`；`/r` `/q` `/export` 三类出口需 `?t=HMAC(secret, rid+YYYYMMDD)[:16]`（按日轮换、基于 rid、`compare_digest` 防时序）；token 模式管理面纳入 `_check_admin`；缺 secret 时 fail-closed；查看页展示带 token 分享链接，查询/导出自动透传。
+- **报表分组目录**（P2-5）：`reports/<分组>/<id>.json` → `/r/<分组>/<id>`（`/q` `/export` `/edit` 两形态路由）；路径 `unquote` 支持 CJK；末段 `export`/`edit` 恒为动作保留字（分组名与 ID 禁用 + 路径穿越校验）；编辑器「分组」输入框；列表页按分组折叠；`db.referenced_by` 改递归防误删；手写 JSON 缺 `params` 键自动补空数组。
+
+### 决策记录
+- `auth=off` 缺省与无分组用法行为与 v0.6 完全一致；分组报表 token 基于 `{group}/{id}` 全串，与根目录报表互不通用。
+
+## 2026-09-03 ｜ v0.8 编辑器与预览体验
+
+### 实现
+- **参数抽屉化**：查询参数区从全量平铺改为紧凑列表（类型标签 + 名称 + 参数ID + 配置/上移/下移/删除），右侧滑出抽屉集中配置（基本信息/数据绑定/手动选项/候选值 SQL，按类型动态显隐）；JS 模型数组为唯一数据源（输入实时提交）；数据集增删时已开面板自动刷新绑定选项；保存/试运行/字段枚举口径与旧版一致。
+- **只读预览页**：列表页每报表新增「预览」入口，新窗口打开只读预览（无导航/编辑/新建/删除/管理入口）；轻量路由 `/pv/{id}`，与 `/r/{id}` 同套访问控制（token 模式需有效 `?t=`），复用查询/导出链路。
+- **驱动懒加载**：`db._require()` 缺驱动时抛中文可操作错误（提示安装命令）；`scripts/start.bat` 启动前检测 pymysql/pyodbc，缺失引导 Y/N 自动安装并二次校验；服务进程优先 `pythonw` 无窗口，找不到回退最小化窗口。
+- **SQL 容错**：`db.strip_semicolon()` 去语句尾分号（DB 客户端粘贴常带 `;`，避免只读校验误判多语句）。
+- **测试**：`tests/test_db.py` +19（驱动缺失/尾分号用例），`tests/test_server.py` +149（抽屉/预览路由用例）。
+
+### 修复（回归）
+- **查询结果取消千分位（第二次，彻底）**：`cellFmt` 与 KPI 卡片移除 `toLocaleString`——v0.3 曾修复、v0.4 数值列格式化时误回退；本次数字列保留右对齐 + `tabular-nums`，全部列按数据库返回值原样展示。
+
+### 决策记录
+- 格式化只做对齐不做改值：展示层不得改变数据原样，千分位如需由用户在 Excel 端处理。
+
+## 2026-09-03 ｜ v0.9 版本基线
+
+- `0.8.0` → `0.9.0`（`src/sqlreport/__init__.py` 与 `pyproject.toml` 同步），不引入新功能，为后续开发提供独立版本基线；对外路由与报表 JSON 格式完全一致，旧报表零迁移。
