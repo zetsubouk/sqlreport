@@ -1,10 +1,10 @@
 # SQL 报表工具 — 功能总结与开发计划
 
-当前版本：v0.6.0（2026-09-03）｜技术栈：Python 3 标准库（http.server / sqlite3），零新依赖
+当前版本：v0.7.0（2026-09-03）｜技术栈：Python 3 标准库（http.server / sqlite3），零新依赖
 
 > **实施计划**：v0.4 → v0.7 的详细实施（决策表 D1-D10、22 个 Task、TDD 步骤与完整代码）见
 > [`docs/PLAN-v0.4-v0.7.md`](docs/PLAN-v0.4-v0.7.md)。
-> 里程碑进度：✅ v0.4 统计基础 → ✅ v0.5 交叉分析 → ✅ v0.6 对比与维度 → ⏳ v0.7 交付加固（xlsx/token/分组）进行中。
+> 里程碑进度：✅ v0.4 统计基础 → ✅ v0.5 交叉分析 → ✅ v0.6 对比与维度 → ✅ v0.7 交付加固（xlsx/token/分组）。
 > 开发日志见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ---
@@ -61,6 +61,10 @@ sqlreport/
 11. ✅ 视图层拆分 `views_report.py`（server.py 瘦身，路由不变）✅ v0.5
 12. ✅ 对比差值 `compare`（双数据集，差值+增长率%）+ 数值分箱 `hist` 块 ✅ v0.6
 13. ✅ 保存视图 `views`（参数组合快捷链接，URL 即状态）✅ v0.6
+14. ✅ 真 .xlsx 导出（手写零依赖 xlsx 写出器，按 blocks 多 sheet，num 列真数值单元格）✅ v0.7
+15. ✅ 打印样式（`@media print`：隐藏表单/按钮/分页条，表格全量铺开带网格线，Ctrl+P 即交付物）✅ v0.7
+16. ✅ token 鉴权（可选开关：HMAC 按日轮换，覆盖 /r /q /export 三类出口；token 模式管理面纳管 `_check_admin`）✅ v0.7
+17. ✅ 报表分组目录（`reports/<分组>/<id>.json` → `/r/<分组>/<id>`，CJK unquote，保留字消歧，列表按分组折叠，`referenced_by` 递归防误删）✅ v0.7
 
 ### 设计决策记录
 
@@ -113,11 +117,11 @@ sqlreport/
 - SQL 拦截：去注释后首词必须为 SELECT/WITH；含 `;` 多语句直接拒绝；与只读账号形成双保险
 - 查询行数硬上限：单数据集 fetch 10 万行（fetchmany 分批）
 
-**P2-2 报表 token 鉴权（可选开关）** ⏳ v0.7 实施中（docs/PLAN-v0.4-v0.7.md Task 21）
+**P2-2 报表 token 鉴权（可选开关）** ✅ v0.7（docs/PLAN-v0.4-v0.7.md Task 21）
 - `config.json`：`{"auth": "off|token", "token_secret": "..."}`
 - token 模式：访问 `/r/<id>` / `/q/<id>` / `/r/<id>/export` 需 `?t=HMAC(secret, rid+date)`；管理面（/edit、/save、/delete_report、/preview）在 token 模式下纳入 `_check_admin`；`off` 行为同现在（内网直用）
 
-**P2-3 真 .xlsx 导出** ⏳ v0.7 实施中（docs/PLAN-v0.4-v0.7.md Task 19）
+**P2-3 真 .xlsx 导出** ✅ v0.7（docs/PLAN-v0.4-v0.7.md Task 19，手写零依赖方案落地，未降级 openpyxl）
 - 首选：手写最小 xlsx（zip + inlineStr，数值 `t="n"`），保持零依赖；按 blocks 构造多 sheet（含摘要 sheet）
 - 若超预算未通过兼容验证，降级引 openpyxl，DEVLOG 记录决策
 
@@ -126,7 +130,7 @@ sqlreport/
 - 环境B NAS Docker：python:3.13-slim 基础镜像，volume 挂载 `reports/` + `datasources.json`；出 base 与 mssql（含 ODBC 驱动层）两个 tag
 - README 补部署章节与 systemd unit / Dockerfile 样例
 
-**P2-5 报表分组目录** ⏳ v0.7 实施中（docs/PLAN-v0.4-v0.7.md Task 22）
+**P2-5 报表分组目录** ✅ v0.7（docs/PLAN-v0.4-v0.7.md Task 22）
 - `reports/<分组>/<id>.json`，URL `/r/<分组>/<id>`；列表页按分组折叠；兼容根目录报表；路由 path 需 unquote 支持 CJK 分组；`db.referenced_by` 改递归防误删
 
 ### P3 — 候选池（有明确需求才启动，不排期）
@@ -146,4 +150,4 @@ sqlreport/
 
 ## 四、节奏
 
-✅ v0.4 统计基础 → ✅ v0.5 交叉分析 → ✅ v0.6 对比与维度 → ⏳ v0.7 交付加固（xlsx / token / 分组，见 docs/PLAN-v0.4-v0.7.md Task 19-22）→ v1.0 对外交付（P2 完成 + CHANGELOG 定版）。
+✅ v0.4 统计基础 → ✅ v0.5 交叉分析 → ✅ v0.6 对比与维度 → ✅ v0.7 交付加固（xlsx / token / 分组，Task 19-22 全部落地）→ v1.0 对外交付（P0 真库连通 / P2-4 部署 systemd+Docker / CHANGELOG 定版）。

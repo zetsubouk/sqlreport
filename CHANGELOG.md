@@ -3,6 +3,26 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化。
 最新变更置顶。
 
+## \[v0.7.0] - 2026-09-03
+
+### 新增
+
+- **真 .xlsx 导出** `format=xlsx`：手写最小 xlsx 写出器（zip + inlineStr，零新依赖，PLAN.md P2-3 首选方案落地）；按 blocks 构造多 sheet（顶层 `summary` → 「摘要」sheet，table/pivot/hist 块各自成 sheet，主表附合计行）；num 列经 `_to_num` 转换输出真数值单元格（Excel 中可计算，无绿三角）；sheet 名清洗（非法字符/31 字符截断/重名 `-2` 后缀）；报表 `export_format` 白名单接纳 `xlsx`（默认仍 `xls`，存量报表零变化）
+
+- **打印样式**：PAGE 全局 `@media print`——隐藏导航/表单/按钮/分页条；`.table-wrap` 解除 60vh 裁切全量铺开；表格补网格线（12px 字号）；KPI 卡横排保留（`break-inside:avoid` 不跨页断开）；状态行（参数口径回显）保留。查看页 Ctrl+P 即交付物
+
+- **token 鉴权（可选开关，P2-2）**：`config.json` `{"auth": "token", "token_secret": "…"}`——`/r/{id}`、`/q/{id}`、`/r/{id}/export` 三类数据出口均需 `?t=`（`HMAC-SHA256(secret, rid+YYYYMMDD)[:16]`，按日轮换，基于 rid 而非 name，`compare_digest` 防时序）；token 模式下管理面（`/edit` `/save` `/delete_report` `/preview`）纳入 `_check_admin`（off 模式维持现状不变）；缺 `token_secret` 时 fail-closed 拒绝全部；查看页顶部展示「带 token 的分享链接」输入框，查询/导出自动透传 token
+
+- **报表分组目录（P2-5）**：`reports/<分组>/<id>.json` → `/r/<分组>/<id>`（`/q`、`/export`、`/edit` 同步支持两形态路由）；路径 `unquote` 支持 CJK 分组；路由消歧——末段 `export` 恒为导出（`/edit` 恒为编辑器），分组名与 ID 禁用 `export`/`edit` 保留字并拒绝路径穿越（保存期校验，中文报错）；编辑器新增「分组（可选）」输入框（编辑分组报表预填）；列表页按分组折叠展示（`details` 块）；`db.referenced_by` 改递归扫描分组子目录（防误删红线）；根目录报表完全兼容
+
+### 兼容性
+
+- `auth=off`（缺省，含 config.json 不存在）与无分组用法：所有行为与 v0.6 完全一致，旧路由零迁移
+
+- 分组报表的 token 基于 `{group}/{id}` 全串生成，与根目录报表互不通用
+
+- 分组报表手写 JSON 缺 `params` 键时编辑器自动补空数组（不再 KeyError）
+
 ## \[v0.6.0] - 2026-09-03
 
 ### 新增
