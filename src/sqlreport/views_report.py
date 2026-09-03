@@ -359,41 +359,54 @@ def _rel_time(ts):
     return time.strftime("%Y-%m-%d", time.localtime(ts))
 
 def render_list(h, store, reports_dir):
-    rows = ""
-    n_total = n_multi = n_cached = 0
-    for fn in sorted(os.listdir(reports_dir) if os.path.isdir(reports_dir) else []):
-        if not fn.endswith(".json"):
-            continue
-        try:
-            r = load_json(os.path.join(reports_dir, fn))
-            rid = fn[:-5]
-            name = esc_html(r.get("name", rid))
-            if r.get("datasets"):
-                ds_names = [d.get("ds", "") for d in r.get("datasets", []) if d.get("ds")]
-            else:
-                ds_names = [r.get("ds")] if r.get("ds") else []
-            ds_tags = " ".join(f'<span class="tag tag-type">{esc_html(d)}</span>'
-                               for d in dict.fromkeys(ds_names)) or '<span style="color:var(--text-muted)">—</span>'
-            ttl = int(r.get("cache_ttl") or 0)
-            cache_tag = f'<span class="tag tag-cache">TTL {ttl}s</span>' if ttl > 0 else '<span class="tag tag-on">实时</span>'
-            if ttl > 0:
-                n_cached += 1
-            max_rows = int(r.get("max_rows") or 2000)
-            if len(r.get("datasets", [])) >= 2:
-                n_multi += 1
-            n_total += 1
-            mtime = _rel_time(os.path.getmtime(os.path.join(reports_dir, fn)))
-            rows += (f'<tr><td><b>{name}</b></td>'
-                     f'<td><span class="id-cell"><code>/r/{rid}</code></span></td>'
-                     f'<td>{ds_tags}</td><td>{cache_tag}</td>'
-                     f'<td class="num">{max_rows:,}</td>'
-                     f'<td class="updated">{mtime}</td>'
-                     f'<td><div class="ops"><a class="op" href="/r/{rid}">打开</a>'
-                     f'<a class="op" href="/edit/{rid}">编辑</a>'
-                     f'<a class="op" href="#" onclick="copyText(location.origin+\'/r/{rid}\');return false">复制链接</a>'
-                     f'<a class="op danger" href="#" onclick="delReport(\'{rid}\');return false">删除</a></div></td></tr>')
-        except Exception:
-            pass
+    stat_cnt = {"total": 0, "multi": 0, "cached": 0}
+
+    def row_html(r, rid, fpath):
+        """单张报表行（rid 已含分组前缀：{group}/{id} 或 {id}）。"""
+        name = esc_html(r.get("name", rid))
+        if r.get("datasets"):
+            ds_names = [d.get("ds", "") for d in r.get("datasets", []) if d.get("ds")]
+        else:
+            ds_names = [r.get("ds")] if r.get("ds") else []
+        ds_tags = " ".join(f'<span class="tag tag-type">{esc_html(d)}</span>'
+                           for d in dict.fromkeys(ds_names)) or '<span style="color:var(--text-muted)">—</span>'
+        ttl = int(r.get("cache_ttl") or 0)
+        cache_tag = f'<span class="tag tag-cache">TTL {ttl}s</span>' if ttl > 0 else '<span class="tag tag-on">实时</span>'
+        if ttl > 0:
+            stat_cnt["cached"] += 1
+        max_rows = int(r.get("max_rows") or 2000)
+        if len(r.get("datasets", [])) >= 2:
+            stat_cnt["multi"] += 1
+        stat_cnt["total"] += 1
+        mtime = _rel_time(os.path.getmtime(fpath))
+        return (f'<tr><td><b>{name}</b></td>'
+                f'<td><span class="id-cell"><code>/r/{rid}</code></span></td>'
+                f'<td>{ds_tags}</td><td>{cache_tag}</td>'
+                f'<td class="num">{max_rows:,}</td>'
+                f'<td class="updated">{mtime}</td>'
+                f'<td><div class="ops"><a class="op" href="/r/{rid}">打开</a>'
+                f'<a class="op" href="/edit/{rid}">编辑</a>'
+                f'<a class="op" href="#" onclick="copyText(location.origin+\'/r/{rid}\');return false">复制链接</a>'
+                f'<a class="op danger" href="#" onclick="delReport(\'{rid}\');return false">删除</a></div></td></tr>')
+
+    def scan_rows(sub=""):
+        """扫描 reports/{sub}/ 下的一级 json（Task 22 分组目录：sub 为分组名，根目录为空）。"""
+        d = os.path.join(reports_dir, sub) if sub else reports_dir
+        rws = ""
+        for fn in sorted(os.listdir(d) if os.path.isdir(d) else []):
+            fpath = os.path.join(d, fn)
+            if not fn.endswith(".json") or not os.path.isfile(fpath):
+                continue
+            try:
+                r = load_json(fpath)
+            except Exception:
+                continue
+            rid = (sub + "/" + fn[:-5]) if sub else fn[:-5]
+            rws += row_html(r, rid, fpath)
+        return rws
+
+    rows = scan_rows()
+    n_total, n_multi, n_cached = stat_cnt["total"], stat_cnt["multi"], stat_cnt["cached"]
     dss = store.load()
     ds_enabled = len(store.visible_names())
     if not rows:
@@ -401,6 +414,21 @@ def render_list(h, store, reports_dir):
                 '<h4>还没有报表</h4>'
                 '<p>把 SQL 贴进来，配上参数条件，就能生成一张可独立访问、可导出 Excel 的报表。</p>'
                 '<a class="btn btn-primary" href="/new">＋ 新建第一张报表</a></div></td></tr>')
+    # 分组目录（Task 22）：每个子目录一个折叠块（details），与根目录报表并列展示
+    groups_html = ""
+    if os.path.isdir(reports_dir):
+        for sub in sorted(os.listdir(reports_dir)):
+            gd = os.path.join(reports_dir, sub)
+            if not os.path.isdir(gd):
+                continue
+            grows = scan_rows(sub)
+            if grows:
+                groups_html += (f'<details class="grp"><summary style="cursor:pointer;font-weight:600;'
+                                f'padding:10px 2px">📁 {esc_html(sub)} <span class="tag tag-type">{grows.count("<tr>")} 张</span></summary>'
+                                f'<div class="card" style="overflow:auto"><div class="table-wrap"><table>'
+                                f'<thead><tr><th>名称</th><th>ID · 独立 URL</th><th>数据源</th><th>缓存</th>'
+                                f'<th class="num">最大行数</th><th>更新时间</th><th>操作</th></tr></thead>'
+                                f'<tbody>{grows}</tbody></table></div></div></details>')
     stat = (f'<div class="stat"><div class="k">报表总数</div><div class="v">{n_total} <small>张</small></div></div>'
             f'<div class="stat"><div class="k">数据源</div><div class="v">{ds_enabled} <small>/ {len(dss)} 启用</small></div></div>'
             f'<div class="stat"><div class="k">多数据集合并</div><div class="v">{n_multi} <small>张</small></div></div>'
@@ -416,6 +444,7 @@ def render_list(h, store, reports_dir):
         <div class="card"><div class="table-wrap"><table id="rt">
         <thead><tr><th>名称</th><th>ID · 独立 URL</th><th>数据源</th><th>缓存</th><th class="num">最大行数</th><th>更新时间</th><th>操作</th></tr></thead>
         <tbody>{rows}</tbody></table></div></div>
+        {groups_html}
         <div class="modal-mask hidden" id="mdl">
           <div class="modal"><div class="m-ic">⚠</div><h3 id="mdl-title"></h3><p id="mdl-body"></p>
           <div class="m-btns"><button class="btn btn-secondary" onclick="hideModal()">取消</button>
@@ -453,6 +482,7 @@ def render_editor(h, store, reports_dir, rid):
         if not os.path.exists(path):
             return h._err(f"报表不存在: {rid}", 404)
         r = load_json(path)
+        r.setdefault("params", [])  # 手写分组 JSON 可能缺 params（Task 22）
     dss = store.visible_names()
     fmt = r.get("export_format") or "xls"
     qmode = r.get("query_mode") or "manual"
@@ -461,6 +491,11 @@ def render_editor(h, store, reports_dir, rid):
     datasets = r.get("datasets") or [{"name": "main", "ds": r.get("ds", ""), "sql": r.get("sql", "")}]
     merge = r.get("merge") or {"mode": "union"}
     title = "编辑报表" if rid else "新建报表"
+    # 分组目录（Task 22）：编辑 {group}/{id} 时拆出分组段预填输入框，保存时再拼接
+    if rid and "/" in rid:
+        grp, base_id = rid.split("/", 1)
+    else:
+        grp, base_id = "", (rid or "")
     blocks_json = esc_html(json.dumps(r.get("blocks") or [], ensure_ascii=False, indent=2))
     body = f"""<div class="crumb">报表列表 / <b>{title}</b></div>
         <div class="pagehead"><div><h1>{title}</h1><div class="sub">保存后即可获得独立访问 URL</div></div>
@@ -472,6 +507,7 @@ def render_editor(h, store, reports_dir, rid):
         <div class="card"><div class="card-head"><h3>基本信息</h3><span class="hint">报表 ID 由名称自动生成</span></div>
         <div style="padding:16px 18px;display:flex;gap:14px;flex-wrap:wrap">
           <div class="field" style="flex:2;min-width:220px"><label>报表名称</label><input id="rname" placeholder="如：订单汇总" value="{esc_html(r.get('name', ''))}"></div>
+          <div class="field" style="width:140px"><label>分组（可选）</label><input id="rgrp" placeholder="如：销售" value="{esc_html(grp)}" title="填写后报表归入 /r/分组/ID，列表页按分组折叠"></div>
           <div class="field" style="width:110px"><label>缓存秒数</label><input id="rcache" type="number" value="{r.get('cache_ttl', 0)}" title="0=实时，每次直查数据库"></div>
           <div class="field" style="width:130px"><label>最大行数</label><input id="rmax" type="number" value="{r.get('max_rows', 2000) or 2000}" title="展示行上限，超限截断并提示"></div>
           <div class="field" style="width:150px"><label>默认导出格式</label><select id="rexp"><option value="xls"{' selected' if fmt == 'xls' else ''}>Excel .xls</option><option value="xlsx"{' selected' if fmt == 'xlsx' else ''}>Excel .xlsx</option><option value="csv"{' selected' if fmt == 'csv' else ''}>CSV .csv</option></select></div>
@@ -663,6 +699,8 @@ function collectParam(row){
   return p;}
 function collect(){return [...document.querySelectorAll('#plist .pr')].map(collectParam).filter(function(p){return p.id;});}
 async function save(e){e.preventDefault();
+  var g=(document.getElementById('rgrp').value||'').trim();
+  var rid=(g?g+'/':'')+(%(rid)s||'');
   const all = [...document.querySelectorAll('#plist .pr')].map(collectParam);
   for(const p of all){
     if(!p.id){toast('存在未填参数ID的参数，请补全或删除','err');return;}
@@ -673,7 +711,7 @@ async function save(e){e.preventDefault();
     try{blocks=JSON.parse(btxt);}
     catch(err){toast('分析块 JSON 解析失败：'+err.message,'err');return;}}
   const res = await fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({id:%(rid)s,name:document.getElementById('rname').value,
+    body:JSON.stringify({id:rid,name:document.getElementById('rname').value,
       cache_ttl:parseInt(document.getElementById('rcache').value)||0,
       max_rows:parseInt(document.getElementById('rmax').value)||0,
       export_format:document.getElementById('rexp').value,
@@ -693,7 +731,7 @@ params.forEach((p,i)=>addp(p));
    "datasets": json.dumps(datasets, ensure_ascii=False),
    "dss": json.dumps(dss),
    "merge": json.dumps(merge, ensure_ascii=False),
-   "rid": json.dumps(rid) if rid else "null"}
+   "rid": json.dumps(base_id) if base_id else "null"}
     h._send(page(title, body, script, "editor"))
 
 def param_form(r, given):

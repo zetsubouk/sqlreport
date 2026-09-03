@@ -35,6 +35,20 @@ def _mk_token(secret, rid):
     return hmac.new(secret.encode(), (rid + time.strftime("%Y%m%d")).encode(),
                     hashlib.sha256).hexdigest()[:16]
 
+
+_RESERVED_RID = {"export", "edit"}  # 路由保留字：分组名/报表 id 均禁止（/r/{id}/export 恒为导出）
+
+
+def _valid_rid(rid):
+    """报表 ID 合法性：根目录 {id} 或分组 {group}/{id}，均一段且非保留字（\\w 含 CJK，天然支持中文）。
+    拒绝空段/./..（防路径穿越）；ID 与分组名禁用 export/edit（路由消歧）。"""
+    if not isinstance(rid, str) or not rid or len(rid) > 200:
+        return False
+    parts = rid.split("/")
+    if len(parts) > 2 or any(not p or p in (".", "..") or p in _RESERVED_RID for p in parts):
+        return False
+    return all(re.fullmatch(r"[\w-]+", p) for p in parts)
+
 # ---------------- HTTP 处理 ----------------
 
 class Handler(BaseHTTPRequestHandler):
@@ -138,15 +152,18 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- GET ----
     def do_GET(self):
-        path = urllib.parse.urlparse(self.path).path
+        path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)  # CJK 分组路径
         args = self._args()
         try:
             if path == "/" or path == "":
                 return self._list_reports()
             if path == "/new":
                 return self._editor(None)
-            m = re.match(r"^/edit/(\w+)$", path)
+            # 分组两形态：{group}/{id}（[^/]+(?:/[^/]+)?）。export 恒为导出 → 分支必须先于 viewer
+            m = re.match(r"^/edit/([^/]+(?:/[^/]+)?)$", path)
             if m:
+                if not _valid_rid(m.group(1)):
+                    return self._err("报表 ID 不合法", 404)
                 if not self._admin_if_token():
                     return
                 return self._editor(m.group(1))
@@ -161,34 +178,41 @@ class Handler(BaseHTTPRequestHandler):
                 if m:
                     return self._ds_form(m.group(1))
                 return self._err("404")
-            m = re.match(r"^/r/(\w+)$", path)
+            m = re.match(r"^/r/([^/]+(?:/[^/]+)?)/export$", path)
             if m:
-                if not self._check_token(m.group(1), args):
-                    return self._err("需要有效的访问 token（?t=…）；请向报表提供方索取分享链接", 401)
-                return self._viewer(m.group(1), args)
-            m = re.match(r"^/r/(\w+)/export$", path)
-            if m:
+                if not _valid_rid(m.group(1)):
+                    return self._err("报表 ID 不合法", 404)
                 if not self._check_token(m.group(1), args):
                     return self._err("需要有效的访问 token（?t=…）", 401)
                 return self._export(m.group(1), args)
+            m = re.match(r"^/r/([^/]+(?:/[^/]+)?)$", path)
+            if m:
+                if not _valid_rid(m.group(1)):
+                    return self._err("报表 ID 不合法", 404)
+                if not self._check_token(m.group(1), args):
+                    return self._err("需要有效的访问 token（?t=…）；请向报表提供方索取分享链接", 401)
+                return self._viewer(m.group(1), args)
             return self._err("404")
         except Exception as e:
             return self._err(f"错误：{e}", 500)
 
     # ---- POST ----
     def do_POST(self):
-        path = urllib.parse.urlparse(self.path).path
+        path = urllib.parse.unquote(urllib.parse.urlparse(self.path).path)  # CJK 分组路径
         try:
             if path.startswith("/q/"):
+                rid = path[3:]
                 # 数据出口同样拦截 token（缺一即为绕过点）；query 传 ?t=（前端 run() 透传）
-                if not self._check_token(path[3:], self._args()):
+                if not self._check_token(rid, self._args()):
                     body, ct = self._json_res({"error": "需要有效的访问 token（?t=…）"})
                     self.send_response(401)
                     self.send_header("Content-Type", ct)
                     self.end_headers()
                     self.wfile.write(body.encode())
                     return
-                return self._query(path[3:], self._flat(self._body()))
+                if not _valid_rid(rid):
+                    return self._send(*self._json_res({"error": "报表 ID 不合法"}))
+                return self._query(rid, self._flat(self._body()))
             if path == "/save":
                 if not self._admin_if_token():
                     return
@@ -454,13 +478,15 @@ updType();
         rid = (data.get("id") or "").strip().lower()
         os.makedirs(REPORTS_DIR, exist_ok=True)
         if rid:
-            # 编辑/显式指定 id：仅允许 Unicode 词字符与连字符，防路径穿越
-            if not re.fullmatch(r"[\w-]+", rid):
-                raise ValueError("非法的报表 ID")
+            # 编辑/显式指定 id：{id} 或 {group}/{id}；拒绝保留字（export/edit）与路径穿越
+            if not _valid_rid(rid):
+                raise ValueError("非法的报表 ID（分组名与 ID 禁用 export/edit，不允许空段或 ..）")
         else:
             # 新建报表：随机不可猜测 id（URL 即唯一凭证，语义化名称派生的 id 可被枚举猜测）
+            # 编辑器分组框填写时前端传 "group/" 前缀 → 随机 base 拼在分组后
+            prefix = rid if rid.endswith("/") else ""
             while True:
-                rid = secrets.token_hex(8)
+                rid = prefix + secrets.token_hex(8)
                 if not os.path.exists(os.path.join(REPORTS_DIR, rid + ".json")):
                     break
         rec = {"name": data["name"], "params": data.get("params", []),
@@ -517,6 +543,9 @@ updType();
         for d in datasets:
             substitute(d["sql"], values)
         path = os.path.join(REPORTS_DIR, rid + ".json")
+        sub = os.path.dirname(path)
+        if sub != REPORTS_DIR:
+            os.makedirs(sub, exist_ok=True)  # 分组子目录（Task 22）
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(rec, f, ensure_ascii=False, indent=2)
@@ -612,9 +641,9 @@ updType();
         return self._send(*self._json_res({"fields": cols}))
 
     def _delete_report(self, data):
-        """删除报表：删文件 + 清该报表缓存。权限与 _save 一致（无独立鉴权）。"""
+        """删除报表：删文件 + 清该报表缓存。权限与 _save 一致（token 模式走管理面保护）。"""
         rid = (data.get("id") or "").strip()
-        if not re.fullmatch(r"\w+", rid):
+        if not _valid_rid(rid):
             return self._send(*self._json_res({"error": "报表 ID 不合法"}))
         path = os.path.join(REPORTS_DIR, rid + ".json")
         if not os.path.exists(path):

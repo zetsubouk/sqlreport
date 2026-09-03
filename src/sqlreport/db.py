@@ -143,22 +143,25 @@ class DatasourceStore:
 
     # ---- 辅助 ----
     def referenced_by(self, name):
-        """扫描 reports/*.json，返回引用该数据源的报表 id 列表（删除前引用检查）。"""
+        """递归扫描 reports/（含分组子目录），返回引用该数据源的报表 id 列表（删除前引用检查）。
+        id 为相对 reports/ 的路径：根目录 {id}，分组报表 {group}/{id}（防误删红线）。"""
         refs = []
         if not os.path.isdir(REPORTS_DIR):
             return refs
-        for fn in sorted(os.listdir(REPORTS_DIR)):
-            if not fn.endswith(".json"):
-                continue
-            try:
-                r = load_json(os.path.join(REPORTS_DIR, fn))
-            except Exception:
-                continue  # 损坏文件不阻塞引用检查
-            used = r.get("ds") == name or any(
-                d.get("ds") == name for d in r.get("datasets", []))
-            if used:
-                refs.append(fn[:-5])
-        return refs
+        for dirpath, _dirnames, filenames in os.walk(REPORTS_DIR):
+            for fn in sorted(filenames):
+                if not fn.endswith(".json"):
+                    continue
+                try:
+                    r = load_json(os.path.join(dirpath, fn))
+                except Exception:
+                    continue  # 损坏文件不阻塞引用检查
+                used = r.get("ds") == name or any(
+                    d.get("ds") == name for d in r.get("datasets", []))
+                if used:
+                    refs.append(os.path.relpath(
+                        os.path.join(dirpath, fn)[:-5], REPORTS_DIR).replace(os.sep, "/"))
+        return sorted(refs)
 
     def test_connection(self, ds):
         """仅建连不执行 SQL。返回 (ok, ms, error)。"""

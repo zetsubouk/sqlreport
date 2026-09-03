@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 import zipfile
 from http.server import ThreadingHTTPServer
 
@@ -889,6 +890,104 @@ class TokenAuthTest(ServerTestCase):
         self.assertFalse(os.path.exists(server.CONFIG_FILE))
         st, _ = self.get("/r/off2")
         self.assertEqual(st, 200)
+
+
+class GroupedReportsTest(ServerTestCase):
+    """报表分组目录（Task 22）：/r/{group}/{id} 两形态路由 + CJK unquote + 保留字消歧
+    + 引用检查递归（防误删红线）+ 根目录报表完全兼容。"""
+
+    def _make_grouped(self, group, rid, rec=None):
+        gd = os.path.join(self.reports_dir, group)
+        os.makedirs(gd, exist_ok=True)
+        rec = rec or {"name": f"{group}报表", "ds": "demo", "sql": "SELECT region FROM orders"}
+        with open(os.path.join(gd, rid + ".json"), "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False)
+
+    def test_grouped_report_routes(self):
+        self._make_grouped("sales", "daily")
+        st, _ = self.get("/r/sales/daily")
+        self.assertEqual(st, 200)
+        st, body = self.req("POST", "/q/sales/daily", "page=1",
+                            "application/x-www-form-urlencoded")
+        self.assertEqual(st, 200)
+        self.assertEqual(json.loads(body)["columns"], ["region"])
+        st, _ = self.get("/r/sales/daily/export")
+        self.assertEqual(st, 200)
+        st, _ = self.get("/edit/sales/daily")
+        self.assertEqual(st, 200)
+
+    def test_cjk_grouped_path_unquoted(self):
+        # CJK 分组：路径百分号编码 + 服务端 unquote
+        self._make_grouped("销售", "日报")
+        st, _ = self.get("/r/" + urllib.parse.quote("销售") + "/" + urllib.parse.quote("日报"))
+        self.assertEqual(st, 200)
+
+    def test_export_suffix_priority(self):
+        # 消歧（计划锁定）：/r/{a}/{b} 末段为保留字 export → 恒按导出语义，不误当分组报表。
+        # grp1.json 存在 → 断言 200 是比计划的 404 更强的消歧守护（若被误当分组则 404）。
+        self.save_report({"name": "歧义报表", "ds": "demo", "sql": "SELECT region FROM orders",
+                          "params": []}, "grp1")
+        os.makedirs(os.path.join(self.reports_dir, "grp1"), exist_ok=True)
+        st, _ = self.get("/r/grp1/export")
+        self.assertEqual(st, 200)
+        st, _ = self.get("/r/nogrp/export")
+        self.assertEqual(st, 400)   # 根报表不存在 → 按导出处理（沿用既有"报表不存在"400 语义）
+
+    def test_save_rejects_reserved_and_traversal(self):
+        # 保留字：分组名与报表 id 均禁止 export/edit；路径穿越拒绝（中文报错）
+        for bad in ("export", "销售/export", "edit/x", "../x", "sales/../x"):
+            st, body = self.post_json("/save", {"id": bad, "name": "坏", "ds": "demo",
+                                                "sql": "SELECT 1", "params": []})
+            self.assertIn("error", json.loads(body), bad)
+            self.assertFalse(os.path.exists(os.path.join(self.reports_dir, bad + ".json")), bad)
+
+    def test_save_grouped_persists_subdir(self):
+        self.save_report({"name": "分组保存", "ds": "demo", "sql": "SELECT region FROM orders",
+                          "params": []}, "sales/weekly")
+        self.assertTrue(os.path.exists(os.path.join(self.reports_dir, "sales", "weekly.json")))
+        st, _ = self.get("/r/sales/weekly")
+        self.assertEqual(st, 200)
+
+    def test_delete_grouped_report(self):
+        self._make_grouped("sales", "tmp")
+        st, body = self.post_json("/delete_report", {"id": "sales/tmp"})
+        self.assertEqual(json.loads(body).get("ok"), True)
+        self.assertFalse(os.path.exists(os.path.join(self.reports_dir, "sales", "tmp.json")))
+
+    def test_referenced_by_finds_grouped_report(self):
+        # 防误删红线：分组子目录报表引用数据源，删除必须能发现
+        self._make_grouped("sales", "daily")
+        st, body = self.post_json("/datasources/delete", {"name": "demo"})
+        j = json.loads(body)
+        self.assertIn("referenced", j)
+        self.assertIn("sales/daily", j["referenced"])
+
+    def test_list_groups_collapsed(self):
+        self._make_grouped("sales", "daily")
+        st, body = self.get("/")
+        self.assertEqual(st, 200)
+        self.assertIn("/r/sales/daily", body)   # 分组报表出现在列表
+        self.assertIn("<details", body)          # 分组折叠块
+
+    def test_root_reports_backward_compat(self):
+        # 兼容对：根目录报表完全兼容
+        self.save_report({"name": "根报表", "ds": "demo", "sql": "SELECT region FROM orders",
+                          "params": []}, "root1")
+        st, _ = self.get("/r/root1")
+        self.assertEqual(st, 200)
+        st, body = self.get("/")
+        self.assertIn("/r/root1", body)
+
+    def test_editor_grouped_prefill_and_save(self):
+        # 编辑器：分组报表预填分组段，保存时拼接 {group}/{id}
+        self._make_grouped("sales", "daily")
+        st, body = self.get("/edit/sales/daily")
+        self.assertEqual(st, 200)
+        self.assertIn('id="rgrp"', body)
+        self.assertIn('value="sales"', body)
+        # 新建页有分组输入框
+        st, body = self.get("/new")
+        self.assertIn('id="rgrp"', body)
 
 
 if __name__ == "__main__":
