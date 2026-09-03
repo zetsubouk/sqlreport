@@ -28,7 +28,7 @@ jobs:
         run: python3 -m unittest discover -s tests -v
       - name: 服务启动 + 首页冒烟
         run: |
-          python3 server.py > /tmp/srv.log 2>&1 &
+          python3 -m sqlreport > /tmp/srv.log 2>&1 &
           SRV=$!
           sleep 2
           code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8765/ || true)

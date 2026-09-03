@@ -22,9 +22,10 @@
 pip install -e .                    # 可编辑安装
 # 按需：pip install -e ".[mysql]"  或  ".[mssql]"
 cp examples/datasources.example.json datasources.json  # 填入真实连接（已被 gitignore）
-python server.py                    # 默认 0.0.0.0:8765
+python -m sqlreport               # 默认 0.0.0.0:8765（需 pip install -e . 或 PYTHONPATH=src）
 # 或：sqlreport                     # 安装后可用命令行入口
-# 或：python -m sqlreport 8765      # 模块方式
+# 或：python -m sqlreport 8765      # 指定端口
+# 或：./scripts/start.sh [端口]      # macOS/Linux 一键启动（自动建 .venv 装依赖）
 ```
 
 1. 浏览器打开 `http://<host>:8765/`，点「＋新建报表」
@@ -32,7 +33,7 @@ python server.py                    # 默认 0.0.0.0:8765
 3. 保存后即得独立访问 URL `/r/<报表id>`，用户免登录直接查询、导出 Excel
 
 > 报表定义存放于 `reports/*.json`（一文件一报表），支持分组子目录 `reports/<分组>/<id>.json`
-> （访问 `/r/<分组>/<id>`，列表页按分组折叠；分组名与 ID 禁用 `export`/`edit` 保留字）。
+> （访问 `/r/<分组>/<id>`；分组报表在「浏览报表」页按分组展示，分组名与 ID 禁用 `export`/`edit` 保留字）。
 > 首次保存时自动创建该目录。导出格式：查看页可选 `.xlsx` / `.xls` / `.csv`，
 > 或报表 `export_format` 指定默认格式。公网部署可在 `config.json` 配置
 > `{"auth": "token", "token_secret": "…"}` 启用 HMAC 分享链接鉴权（缺省关闭，内网直用）。
@@ -41,20 +42,24 @@ python server.py                    # 默认 0.0.0.0:8765
 
 ```
 sqlreport/
-├── src/sqlreport/         # 源码包（标准 src 布局）
+├── src/sqlreport/         # 源码包（标准 src 布局，唯一可信源码）
 │   ├── __init__.py
 │   ├── __main__.py        # python -m sqlreport 入口
-│   ├── server.py          # 路由 + 页面模板（视图层）
+│   ├── server.py          # 路由 + 业务（视图拼装在 views_report.py）
+│   ├── views_report.py    # 页面模板与拼装（PAGE/nav/page/param_form）
 │   ├── db.py              # 数据层：连接/限流/合并/缓存
-│   └── params.py          # 参数层：转义/替换/归一化（纯函数）
-├── server.py              # 根级兼容入口（转发到 src）
-├── db.py / params.py      # 根级兼容 shim（保留旧导入）
+│   ├── params.py          # 参数层：转义/替换/归一化（纯函数）
+│   ├── analytics.py       # 统计分析：合计/KPI/TopN/占比/分桶/透视
+│   └── xlsx.py            # 真 .xlsx 导出（标准库 zip 实现）
 ├── pyproject.toml         # 构建与项目元数据（pip install -e .）
-├── tests/                 # 单元/集成测试
-├── scripts/               # 运维脚本（start.bat / stop.bat）
+├── tests/                 # 单元/集成测试（from sqlreport.… 导入）
+├── scripts/               # 运维脚本（start.sh/stop.sh + start.bat/stop.bat）
+├── start.sh / stop.sh     # 根级薄转发（macOS/Linux）
+├── start.bat / stop.bat   # 根级薄转发（Windows）
 ├── examples/              # 配置样例（datasources.example.json）
-├── docs/                  # 架构与产品文档
+├── docs/                  # 文档（设计/PRD/规划/开发准则/变更踩坑）
 │   ├── DESIGN-v0.2.md / PRD-v0.2.md
+│   ├── PLAN.md / DEVLOG.md / IDEA.md
 │   ├── diagrams/          # 架构图（mermaid）
 │   └── DEVELOPMENT.md     # 开发准则（必读）
 ├── reports/*.json         # 运行时报表定义（不入库）
@@ -113,6 +118,20 @@ scripts\stop.bat          :: 停止
 ```
 
 `scripts/start.bat` 自动探测 `python`/`py`/`python3`，端口占用检查，`start /min` 后台运行；根目录 `start.bat`/`stop.bat` 为薄转发，兼容旧路径。
+
+## macOS / Linux 部署
+
+```sh
+scripts/start.sh         # 后台启动（端口 8765，日志 logs/sqlreport.log）
+scripts/start.sh 9000    # 指定端口
+scripts/stop.sh          # 停止
+```
+
+`scripts/start.sh`（POSIX sh，bash/dash/zsh 通用）自动探测 Python 3.10+（macOS 缺失提示 `brew install python3`，
+Linux 按发行版提示 apt/dnf/pacman），创建 `.venv` 并 `pip install -e .`，
+缺 `pymysql`/`pyodbc` 时交互式询问是否安装（仅 SQLite 可忽略，非交互终端自动跳过）；
+端口占用检查，nohup 后台运行 + `curl` 健康检查，PID 记入 `logs/sqlreport.<端口>.pid`。
+根目录 `start.sh`/`stop.sh` 为薄转发。
 
 ## 安全约定
 

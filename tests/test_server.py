@@ -19,11 +19,10 @@ import urllib.parse
 import zipfile
 from http.server import ThreadingHTTPServer
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-import db
-import server
-from db import DatasourceStore, QueryCache
+from sqlreport import db, server
+from sqlreport.db import DatasourceStore, QueryCache
 
 HOST = "127.0.0.1"
 
@@ -818,6 +817,18 @@ class PreviewLiteTest(ServerTestCase):
         self.assertNotIn('href="/new"', body)          # 无新建入口
         self.assertIn('id="ff"', body)                 # 查询表单
         self.assertIn("exp()", body)                   # 导出
+        # 浏览报表打开的页面同样保持只读：lite 页不出现返回/编辑按钮
+        self.assertNotIn('href="/"', body)
+
+    def test_viewer_nav_buttons(self):
+        # v0.10：查看页右上角新增【返回】与【编辑】
+        self._save()
+        st, body = self.get("/r/pv1")
+        self.assertEqual(st, 200)
+        self.assertIn('href="/"', body)                # 返回列表
+        self.assertIn(">返回</a>", body)
+        self.assertIn('href="/edit/pv1"', body)        # 编辑入口
+        self.assertIn(">编辑</a>", body)
         self.assertIn('id="out"', body)                # 数据区域
 
     def test_preview_lite_queries_data(self):
@@ -1023,12 +1034,29 @@ class GroupedReportsTest(ServerTestCase):
         self.assertIn("referenced", j)
         self.assertIn("sales/daily", j["referenced"])
 
-    def test_list_groups_collapsed(self):
+    def test_list_hides_grouped_and_browse_shows(self):
+        # v0.10 列表页只显示未分组报表；分组报表仅在 /browse 浏览页按分组展示
         self._make_grouped("sales", "daily")
+        self.save_report({"name": "根报表", "ds": "demo", "sql": "SELECT region FROM orders",
+                          "params": []}, "root1")
         st, body = self.get("/")
         self.assertEqual(st, 200)
-        self.assertIn("/r/sales/daily", body)   # 分组报表出现在列表
-        self.assertIn("<details", body)          # 分组折叠块
+        self.assertIn("/r/root1", body)              # 根目录报表在列表
+        self.assertNotIn("/r/sales/daily", body)     # 分组报表不再出现在列表
+        self.assertNotIn("<details", body)           # 无分组折叠块
+        # 浏览页：默认分组 + 分组目录均有报表
+        st, body = self.get("/browse")
+        self.assertEqual(st, 200)
+        self.assertIn("/r/root1", body)
+        self.assertIn("/r/sales/daily", body)
+        self.assertIn("默认分组", body)
+        self.assertNotIn('href="/new"', body)        # 浏览页无新建入口
+        self.assertNotIn("/edit/", body)             # 无编辑入口
+        # 全部分组后：默认分组隐藏
+        os.remove(os.path.join(self.reports_dir, "root1.json"))
+        st, body = self.get("/browse")
+        self.assertEqual(st, 200)
+        self.assertNotIn("默认分组", body)
 
     def test_root_reports_backward_compat(self):
         # 兼容对：根目录报表完全兼容

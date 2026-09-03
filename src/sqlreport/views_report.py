@@ -343,7 +343,7 @@ __SCRIPT__
 </script></body></html>"""
 
 def nav(active=""):
-    items = [("home", "报表列表", "/"), ("editor", "新建报表", "/new"), ("ds", "数据源管理", "/datasources")]
+    items = [("home", "报表列表", "/"), ("browse", "浏览报表", "/browse"), ("ds", "数据源管理", "/datasources")]
     links = ""
     for k, name, href in items:
         cls = ' class="active"' if k == active else ""
@@ -433,21 +433,7 @@ def render_list(h, store, reports_dir):
                 '<h4>还没有报表</h4>'
                 '<p>把 SQL 贴进来，配上参数条件，就能生成一张可独立访问、可导出 Excel 的报表。</p>'
                 '<a class="btn btn-primary" href="/new">＋ 新建第一张报表</a></div></td></tr>')
-    # 分组目录（Task 22）：每个子目录一个折叠块（details），与根目录报表并列展示
-    groups_html = ""
-    if os.path.isdir(reports_dir):
-        for sub in sorted(os.listdir(reports_dir)):
-            gd = os.path.join(reports_dir, sub)
-            if not os.path.isdir(gd):
-                continue
-            grows = scan_rows(sub)
-            if grows:
-                groups_html += (f'<details class="grp"><summary style="cursor:pointer;font-weight:600;'
-                                f'padding:10px 2px">📁 {esc_html(sub)} <span class="tag tag-type">{grows.count("<tr>")} 张</span></summary>'
-                                f'<div class="card" style="overflow:auto"><div class="table-wrap"><table>'
-                                f'<thead><tr><th>名称</th><th>ID · 独立 URL</th><th>数据源</th><th>缓存</th>'
-                                f'<th class="num">最大行数</th><th>更新时间</th><th>操作</th></tr></thead>'
-                                f'<tbody>{grows}</tbody></table></div></div></details>')
+    # 分组报表不再出现在列表页（浏览报表 /browse 按分组展示）
     stat = (f'<div class="stat"><div class="k">报表总数</div><div class="v">{n_total} <small>张</small></div></div>'
             f'<div class="stat"><div class="k">数据源</div><div class="v">{ds_enabled} <small>/ {len(dss)} 启用</small></div></div>'
             f'<div class="stat"><div class="k">多数据集合并</div><div class="v">{n_multi} <small>张</small></div></div>'
@@ -463,7 +449,6 @@ def render_list(h, store, reports_dir):
         <div class="card"><div class="table-wrap"><table id="rt">
         <thead><tr><th>名称</th><th>ID · 独立 URL</th><th>数据源</th><th>缓存</th><th class="num">最大行数</th><th>更新时间</th><th>操作</th></tr></thead>
         <tbody>{rows}</tbody></table></div></div>
-        {groups_html}
         <div class="modal-mask hidden" id="mdl">
           <div class="modal"><div class="m-ic">⚠</div><h3 id="mdl-title"></h3><p id="mdl-body"></p>
           <div class="m-btns"><button class="btn btn-secondary" onclick="hideModal()">取消</button>
@@ -494,6 +479,72 @@ document.getElementById('fds').addEventListener('change',flt);
 """
     h._send(page("报表列表", body, script, "home"))
 
+def render_browse(h, store, reports_dir):
+    """浏览报表（只读目录）：未分组归入「默认分组」，各分组一块；
+    默认分组无报表则整块隐藏；不提供任何新建/编辑/删除入口。"""
+    default_rows = ""
+    n_total = 0
+
+    def card_html(r, rid):
+        nonlocal n_total
+        name = esc_html(r.get("name", rid))
+        sub = esc_html(r.get("sub") or "贴 SQL 生成报表，独立 URL 免登录访问")
+        n_total += 1
+        return (f'<div class="card"><div class="table-wrap"><table>'
+                f'<tr><td style="padding:12px 16px"><b>{name}</b><br>'
+                f'<span style="font-size:12.5px;color:var(--text-muted)">{sub}</span></td>'
+                f'<td style="padding:12px 16px;text-align:right;width:120px">'
+                f'<a class="btn btn-secondary btn-sm" href="/r/{rid}" target="_blank" rel="noopener">打开</a>'
+                f'</td></tr></table></div></div>')
+
+    # 默认分组（reports/ 根目录）
+    for fn in sorted(os.listdir(reports_dir) if os.path.isdir(reports_dir) else []):
+        fpath = os.path.join(reports_dir, fn)
+        if not fn.endswith(".json") or not os.path.isfile(fpath):
+            continue
+        try:
+            r = load_json(fpath)
+        except Exception:
+            continue
+        default_rows += card_html(r, fn[:-5])
+
+    blocks = []
+    if default_rows:
+        blocks.append(f'<details class="grp" open><summary style="cursor:pointer;font-weight:600;'
+                      f'padding:10px 2px">📁 默认分组 <span class="tag tag-type">'
+                      f'{default_rows.count("<div class=")} 张</span></summary>'
+                      f'<div style="display:flex;flex-direction:column;gap:10px">{default_rows}</div></details>')
+
+    # 各分组目录
+    if os.path.isdir(reports_dir):
+        for sub in sorted(os.listdir(reports_dir)):
+            gd = os.path.join(reports_dir, sub)
+            if not os.path.isdir(gd):
+                continue
+            grows = ""
+            for fn in sorted(os.listdir(gd)):
+                fpath = os.path.join(gd, fn)
+                if not fn.endswith(".json") or not os.path.isfile(fpath):
+                    continue
+                try:
+                    r = load_json(fpath)
+                except Exception:
+                    continue
+                grows += card_html(r, sub + "/" + fn[:-5])
+            if grows:
+                blocks.append(f'<details class="grp" open><summary style="cursor:pointer;font-weight:600;'
+                              f'padding:10px 2px">📁 {esc_html(sub)} <span class="tag tag-type">'
+                              f'{grows.count("<div class=")} 张</span></summary>'
+                              f'<div style="display:flex;flex-direction:column;gap:10px">{grows}</div></details>')
+
+    if not blocks:
+        blocks = ('<div class="card"><div class="empty"><div class="il">📄</div>'
+                  '<h4>还没有报表</h4><p>先在「报表列表」中新建报表，即可在此浏览。</p></div></div>')
+    body = f"""<div class="pagehead"><div><h1>浏览报表</h1><div class="sub">按分组浏览所有报表，点击「打开」在新窗口查看</div></div></div>
+        {"".join(blocks)}"""
+    h._send(page("浏览报表", body, "", "browse"))
+
+
 def render_editor(h, store, reports_dir, rid):
     r = {"name": "", "ds": "", "sql": "", "params": []}
     if rid:
@@ -522,7 +573,8 @@ def render_editor(h, store, reports_dir, rid):
     body = f"""<div class="crumb">报表列表 / <b>{title}</b></div>
         <div class="pagehead"><div><h1>{title}</h1><div class="sub">保存后即可获得独立访问 URL</div></div>
         <div style="display:flex;gap:8px"><a class="btn btn-secondary" href="/">取消</a>
-        <button class="btn btn-primary" onclick="save(event)">保存并生成 URL</button></div></div>
+        <button class="btn btn-secondary" onclick="save(event)">保存</button>
+        <button class="btn btn-primary" onclick="saveAndPreview(event)">保存并预览</button></div></div>
         <form onsubmit="save(event)" id="edform">
         <div class="editor-grid">
         <div>
@@ -791,19 +843,19 @@ function addp(){
   openParamDrawer(params.length-1);
 }
 function collect(){return params.filter(function(p){return p.id;});}
-async function save(e){e.preventDefault();
+async function doSave(ev){if(ev)ev.preventDefault();
   var g=(document.getElementById('rgrp').value||'').trim();
   var rid=(g?g+'/':'')+(%(rid)s||'');
-  if(!document.getElementById('rname').value.trim()){toast('报表名称不能为空','err');return;}
+  if(!document.getElementById('rname').value.trim()){toast('报表名称不能为空','err');return null;}
   const all = params;
   for(const p of all){
-    if(!p.id){toast('存在未填参数ID的参数，请补全或删除','err');return;}
-    if(p.type==='select' && !p.source && !(p.options||'').trim()){toast('参数「'+(p.label||p.id)+'」为下拉类型，请绑定过滤字段或填写手动选项','err');return;}}
+    if(!p.id){toast('存在未填参数ID的参数，请补全或删除','err');return null;}
+    if(p.type==='select' && !p.source && !(p.options||'').trim()){toast('参数「'+(p.label||p.id)+'」为下拉类型，请绑定过滤字段或填写手动选项','err');return null;}}
   let blocks=null;
   const btxt=document.getElementById('rblocks').value.trim();
   if(btxt){
     try{blocks=JSON.parse(btxt);}
-    catch(err){toast('分析块 JSON 解析失败：'+err.message,'err');return;}}
+    catch(err){toast('分析块 JSON 解析失败：'+err.message,'err');return null;}}
   const res = await fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({id:rid,orig_id:ORIG,name:document.getElementById('rname').value,
       cache_ttl:parseInt(document.getElementById('rcache').value)||0,
@@ -813,9 +865,14 @@ async function save(e){e.preventDefault();
       page_size:parseInt(document.getElementById('rpage').value)||20,
       params:collect(),datasets:collectDs(),merge:collectMerge(),blocks:blocks})});
   const j = await res.json();
-  if(j.error){toast('失败:'+j.error,'err');return;}
+  if(j.error){toast('失败:'+j.error,'err');return null;}
+  return j;}
+async function save(ev){const j=await doSave(ev);if(!j)return;
   toast('已保存，URL: /r/'+j.id,'ok');
-  location.href='/r/'+j.id;}
+  if(!ORIG){location.href='/edit/'+j.id;}   /* 新建：原地变为编辑态 */
+  else{ORIG=j.id;}}
+async function saveAndPreview(ev){const j=await doSave(ev);if(!j)return;
+  window.open('/r/'+j.id,'_blank');}
 document.getElementById('mmode').value = MERGE.mode || 'union';
 document.getElementById('mon').value = (MERGE.on||[]).join(',');
 document.getElementById('mcols').value = (MERGE.cols||[]).join(',');
@@ -904,12 +961,11 @@ def render_viewer(h, store, reports_dir, rid, args, lite=False):
             for v in views)
         views_html = (f'<div class="viewsbar" style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">'
                       f'<span style="line-height:30px;color:#888">快捷视图：</span>{links}</div>')
-    body = f"""<div class="crumb">报表列表 / <b>{name}</b></div>
-        {h._share_bar(rid)}
+    body = f"""{h._share_bar(rid)}
         {views_html}
         <div class="pagehead"><div><h1>{name}</h1><div class="sub">设置查询条件，查看或导出数据</div></div>
-        <div style="display:flex;gap:8px"><a class="btn btn-secondary" href="/edit/{rid}">编辑</a>
-        <a class="btn btn-primary" href="/new">＋ 新建报表</a></div></div>
+        <div style="display:flex;gap:8px"><a class="btn btn-secondary" href="/">返回</a>
+        <a class="btn btn-secondary" href="/edit/{rid}">编辑</a></div></div>
         <form method="get" action="/r/{rid}" id="ff">
         <div class="card" style="padding:18px">
           <div class="parambar">{form}</div>

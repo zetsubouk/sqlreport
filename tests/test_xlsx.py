@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """xlsx.py 单元测试：zip 结构与单元格编码"""
 import io, os, sys, unittest, zipfile
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from xlsx import write_xlsx
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+from sqlreport.xlsx import write_xlsx
 
 class TestXlsx(unittest.TestCase):
     def test_zip_structure_and_cells(self):

@@ -69,15 +69,27 @@ if !NEED_INSTALL!==1 (
   echo.
 )
 
+rem ---- 包自检：pip 安装过则直接用，否则用 src 布局兜底 ----
+"!PYTHON!" -c "import sqlreport" >nul 2>&1
+if not !errorlevel!==0 (
+  if exist "src\sqlreport\__init__.py" (
+    if defined PYTHONPATH ( set "PYTHONPATH=%CD%\src;!PYTHONPATH!" ) else ( set "PYTHONPATH=%CD%\src" )
+  ) else (
+    echo [依赖] 未找到 sqlreport 包且无 src\sqlreport，请先执行 "!PYTHON!" -m pip install -e .
+    pause
+    exit /b 1
+  )
+)
+
 echo [启动] SqlReport 端口 %PORT%  Python=!PYTHON!
 rem 服务进程：优先 pythonw（无控制台，彻底隐藏窗口）；找不到则回退最小化窗口。日志均写 logs\sqlreport.log
 set PYTOOL=
 where pythonw >nul 2>&1
 if not !errorlevel!==0 set PYTOOL=pythonw
 if defined PYTOOL (
-  start "" !PYTOOL! server.py !PORT! > logs\sqlreport.log 2>&1
+  start "" !PYTOOL! -m sqlreport !PORT! > logs\sqlreport.log 2>&1
 ) else (
-  start "SqlReport" /min cmd /c ""!PYTHON!" server.py !PORT! > logs\sqlreport.log 2>&1"
+  start "SqlReport" /min cmd /c ""!PYTHON!" -m sqlreport !PORT! > logs\sqlreport.log 2>&1"
 )
 
 timeout /t 2 /nobreak >nul

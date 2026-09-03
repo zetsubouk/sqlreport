@@ -4,9 +4,9 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from analytics import (total_row, _to_num, summary_metrics, top_n_rows,
+from sqlreport.analytics import (total_row, _to_num, summary_metrics, top_n_rows,
                        add_share_columns, bucket_column, pivot, diff_merge, bin_numeric)
 
 COLS = ["区域", "金额", "单数"]

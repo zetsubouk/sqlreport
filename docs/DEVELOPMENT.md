@@ -8,15 +8,18 @@
 sqlreport/
 ├── src/sqlreport/         # 源码包（唯一可信源码）
 │   ├── server.py          # 视图/路由（Handler + PAGE 模板）
+│   ├── views_report.py    # 页面模板与拼装（PAGE/nav/page/param_form）
 │   ├── db.py              # 数据层（DatasourceStore / run_query / merge_* / QueryCache）
-│   └── params.py          # 参数层（esc / build_values / substitute / normalize_report）
-├── server.py / db.py / params.py  # 根级 shim，仅做 sys.modules 转发（兼容旧导入 + python server.py）
+│   ├── params.py          # 参数层（esc / build_values / substitute / normalize_report）
+│   ├── analytics.py       # 统计分析（纯函数）与 xlsx.py（真 .xlsx 导出）
 ├── pyproject.toml         # 构建元数据（setuptools src 布局）
-├── tests/                 # 测试（镜像 src 结构，test_*.py）
-├── scripts/               # 运维脚本（start.bat / stop.bat）
+├── tests/                 # 测试（镜像 src 结构，test_*.py，from sqlreport.… 导入）
+├── scripts/               # 运维脚本（start.sh/stop.sh + start.bat/stop.bat）
+├── start.sh/stop.sh       # 根级薄转发（macOS/Linux）；start.bat/stop.bat（Windows）
 ├── examples/              # 样例配置（datasources.example.json）
 ├── docs/
 │   ├── DESIGN-v0.2.md / PRD-v0.2.md
+│   ├── PLAN.md / DEVLOG.md / IDEA.md  # 规划与踩坑记录（根目录不散放文档）
 │   ├── diagrams/*.mermaid
 │   └── DEVELOPMENT.md     # 本文件
 ├── .trae/rules/project_rules.md  # 机器可读规则（与本文保持一致）
@@ -24,7 +27,7 @@ sqlreport/
 └── .github/workflows/ci.yml
 ```
 
-**原则**：源码只在 `src/sqlreport/` 修改；根级 `server.py/db.py/params.py` 仅为兼容转发，不得堆业务逻辑。
+**原则**：源码只在 `src/sqlreport/` 修改；运行入口统一 `python -m sqlreport` / `sqlreport` / 启停脚本，不得在根目录新增兼容入口。
 
 ## 2. 分层与依赖
 
@@ -44,11 +47,11 @@ sqlreport/
    python -m py_compile src/sqlreport/*.py
    python -m unittest discover -s tests -v
    # 改动 server.py 时
-   python server.py & sleep 2; curl -s http://127.0.0.1:8765/ | head; kill %1
+   PYTHONPATH=src python -m sqlreport & sleep 2; curl -s http://127.0.0.1:8765/ | head; kill %1
    ```
 5. **CI 门禁**（`ci.yml`）：`pip install -e .` → 编译 → 导入冒烟 → unittest → 首页 200 冒烟。任一步失败不得合入。
-6. **服务重启策略**：每次修改 `src/sqlreport/*.py` 后，必须重启本地服务再验证（`scripts/stop.bat` / `scripts/start.bat` 或 `kill + python server.py`），避免旧进程持有旧代码。
-7. **文档同步**：变更对外行为或目录结构时，同时更新 `README.md`、`CHANGELOG.md`（Unreleased 区）、`docs/DESIGN-v0.2.md` 与 `PLAN.md` 完成标记。
+6. **服务重启策略**：每次修改 `src/sqlreport/*.py` 后，必须重启本地服务再验证（`scripts/stop.sh` / `scripts/start.sh`，Windows 用 `scripts/stop.bat` / `scripts/start.bat`），避免旧进程持有旧代码。
+7. **文档同步**：变更对外行为或目录结构时，同时更新 `README.md`、`CHANGELOG.md`（Unreleased 区）、`docs/DESIGN-v0.2.md` 与 `docs/PLAN.md` 完成标记。
 
 ## 4. 配置与数据
 
@@ -59,7 +62,7 @@ sqlreport/
 ## 5. 测试准则
 
 - 测试文件位于 `tests/test_*.py`，与 `src/sqlreport/*.py` 一一对应。
-- 导入方式兼容双入口：优先 `from sqlreport.xxx import`，测试中通过 `sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))` 解析（根级 shim 兜底旧 `import db`）。
+- 导入方式：`from sqlreport.xxx import …`，测试中通过 `sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))` 解析（未 `pip install -e .` 时的兜底）。
 - 覆盖范围：`params` 纯函数单测、`db` 的只读校验/合并/缓存、集成用 `ThreadingHTTPServer` 真实端口测试（见 `test_server.py`）。
 
 ## 6. 代码风格
@@ -71,8 +74,8 @@ sqlreport/
 ## 7. 发布与部署
 
 - 版本号在 `src/sqlreport/__init__.py` 与 `pyproject.toml` 同步。
-- Windows 启停脚本在 `scripts/`，修改后需在 Windows 真机或说明兼容性。
-- 部署文档在 `README.md`「Windows 部署」与 `docs/DESIGN-v0.2.md` 保持一致。
+- Windows 启停脚本在 `scripts/*.bat`，macOS/Linux 在 `scripts/*.sh`（POSIX sh），修改后需说明实测平台与兼容性。
+- 部署文档在 `README.md`「Windows 部署 / macOS-Linux 部署」与 `docs/DESIGN-v0.2.md` 保持一致。
 
 ## 8. 文档分工
 
@@ -82,5 +85,5 @@ sqlreport/
 | `CHANGELOG.md` | 使用者 | 每个版本发布时 |
 | `docs/DESIGN-v0.2.md` | 架构 | 分层/接口/预算变更时 |
 | `docs/DEVELOPMENT.md` | 开发者 | 流程/目录/准则变更时 |
-| `DEVLOG.md` | 开发者 | 按日期追加踩坑与决策 |
-| `PLAN.md` | 规划 | 完成项打 ✅ 并注版本 |
+| `docs/DEVLOG.md` | 开发者 | 按日期追加踩坑与决策 |
+| `docs/PLAN.md` | 规划 | 完成项打 ✅ 并注版本 |

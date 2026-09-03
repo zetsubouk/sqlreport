@@ -158,6 +158,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/" or path == "":
                 return self._list_reports()
+            if path == "/browse":
+                return views_report.render_browse(self, DS_STORE, REPORTS_DIR)
             if path == "/new":
                 return self._editor(None)
             # 分组两形态：{group}/{id}（[^/]+(?:/[^/]+)?）。export 恒为导出 → 分支必须先于 viewer
