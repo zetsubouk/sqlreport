@@ -31,6 +31,16 @@ def load_json(path):
         return json.load(f)
 
 
+def _require(dep, pip, hint):
+    """可选驱动懒加载：缺失时抛出可操作的中文错误（提示安装命令）。"""
+    try:
+        return __import__(dep)
+    except ImportError:
+        raise RuntimeError(
+            f"缺少 Python 依赖 `{dep}`（{hint}）。请运行: {pip}，"
+            "或删除该数据源后重新运行启动脚本自动安装")
+
+
 def _connect_cfg(ds):
     """按数据源配置建连（含超时），供 connect() 与 test_connection() 复用。"""
     t = ds["type"]
@@ -41,13 +51,13 @@ def _connect_cfg(ds):
             path = os.path.join(BASE, path)
         return sqlite3.connect(path, timeout=5)
     if t == "mysql":
-        import pymysql
+        pymysql = _require("pymysql", "python -m pip install pymysql", "MySQL 驱动")
         return pymysql.connect(host=ds["host"], port=int(ds.get("port", 3306)),
                                user=ds["user"], password=ds["password"],
                                database=ds["database"], charset="utf8mb4",
                                connect_timeout=5, read_timeout=timeout, write_timeout=timeout)
     if t == "sqlserver":
-        import pyodbc
+        pyodbc = _require("pyodbc", "python -m pip install pyodbc", "SQL Server 驱动")
         dsn = (f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={ds['host']},{ds.get('port', 1433)};"
                f"DATABASE={ds['database']};UID={ds['user']};PWD={ds['password']}")
         cnxn = pyodbc.connect(dsn, timeout=timeout)
@@ -206,6 +216,12 @@ def _column_types(cols, rows):
         else:
             types.append("str")
     return types
+
+
+def strip_semicolon(sql):
+    """去除语句末尾的分号与空白（DB 客户端粘贴 SQL 常带 ; 结尾，包裹子查询前剔除，
+    避免只读校验把尾分号误判为「多语句」而拒绝执行）。"""
+    return re.sub(r"\s*;+\s*$", "", sql or "")
 
 
 def sql_is_readonly(sql):

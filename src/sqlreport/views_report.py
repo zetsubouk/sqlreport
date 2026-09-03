@@ -79,6 +79,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--brand);b
 .search .ic{position:absolute;left:10px;color:var(--text-muted);font-size:13px}
 /* 表格 */
 .table-wrap{overflow:auto;max-height:60vh}
+.table-wrap thead th{position:sticky;top:0;z-index:1;box-shadow:inset 0 -1px 0 var(--border)}
 table{width:100%;border-collapse:collapse;font-size:13.5px}
 th{background:var(--surface-muted);color:var(--text-secondary);font-weight:600;font-size:12px;letter-spacing:.3px;text-align:left;padding:9px 16px;border-bottom:1px solid var(--border);white-space:nowrap}
 td{padding:11px 16px;border-bottom:1px solid var(--border);vertical-align:middle;white-space:nowrap}
@@ -184,6 +185,24 @@ code,.mono{font-family:var(--font-mono);font-size:12.5px}
 .modal h3{font-size:16px;margin-bottom:6px}
 .modal p{font-size:13px;color:var(--text-secondary);margin-bottom:18px}
 .modal .m-btns{display:flex;gap:10px;justify-content:center}
+/* 参数抽屉（编辑器） */
+.drawer-mask{position:fixed;inset:0;background:rgba(28,42,66,.35);z-index:98;backdrop-filter:blur(1px)}
+.drawer{position:fixed;top:0;right:0;height:100vh;width:400px;max-width:92vw;background:#fff;box-shadow:-8px 0 26px rgba(28,42,66,.14);z-index:99;display:flex;flex-direction:column;transform:translateX(102%);transition:transform .22s ease}
+.drawer.open{transform:translateX(0)}
+.drawer-head{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--surface)}
+.drawer-head h3{font-size:15px;font-weight:600}
+.drawer-head .btn-icon{margin-left:auto}
+.drawer-body{padding:16px 18px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:14px}
+.drawer-foot{display:flex;gap:10px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--border);background:var(--surface)}
+.pr-row{display:flex;align-items:center;gap:8px;background:var(--surface-muted);border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin-bottom:8px;transition:border-color .12s,box-shadow .12s}
+.pr-row:hover{border-color:var(--brand-line);box-shadow:var(--shadow-sm)}
+.pr-row .pr-id{font-family:var(--font-mono);font-size:11.5px;color:var(--text-muted);background:#fff;border:1px solid var(--border);padding:1px 7px;border-radius:5px}
+.pr-row .pr-ops{margin-left:auto;display:flex;gap:4px;align-items:center;flex-shrink:0}
+.pr-row .pr-ops .btn-sm{white-space:nowrap}
+.empty-sm{text-align:center;color:var(--text-muted);font-size:12.5px;padding:16px 10px;background:var(--surface-muted);border:1px dashed var(--border-strong);border-radius:10px;margin-bottom:8px}
+/* 报表预览页（只读独立页，直接 URL 访问） */
+.pv-head{border-bottom:1px solid var(--border);padding-bottom:14px;margin-bottom:16px}
+.pv-title{font-size:20px;font-weight:700}
 .hidden{display:none!important}
 @media (max-width:900px){.editor-grid{grid-template-columns:1fr}.stat-grid{grid-template-columns:repeat(2,1fr)}.ds-grid{grid-template-columns:1fr}}
 /* 打印样式（Task 20）：查看页 Ctrl+P 即交付物——隐藏导航/表单/按钮/分页条，表格全量铺开带网格线；KPI 卡横排保留数值，状态行（参数口径）保留 */
@@ -206,9 +225,8 @@ function copyText(t){var done=function(){toast('链接已复制','ok')},fail=fun
 /* 共享表格组件：查看页与编辑器试运行共用（滚动容器+客户端分页+状态行）。
    宿主先 tblInit(out)，再 tblShow(out,j,defPage)。 */
 function cellFmt(v,ct){
-  if(ct==='num'&&v!==''&&v!=null){
-    var n=parseFloat(String(v).replace(/,/g,''));
-    if(!isNaN(n))return '<td class="num">'+escHtml(n.toLocaleString('zh-CN',{maximumFractionDigits:2}))+'</td>';}
+  if(ct==='num'&&v!==''&&v!=null&&!isNaN(parseFloat(String(v).replace(/,/g,'')))){
+    return '<td class="num">'+escHtml(v)+'</td>';}
   return '<td>'+escHtml(v)+'</td>';}
 function tblInit(out){
   if(out.classList.contains('rs'))return;
@@ -284,9 +302,8 @@ function tblShow(out,j,defPage,given){
   if(j.error){out.innerHTML='<div class="err" style="margin:14px">'+escHtml(j.error)+'</div>';return;}
   var kpi=document.getElementById('kpi');
   if(kpi){kpi.innerHTML=(j.summary||[]).map(function(m){
-    var v=(m.value==null)?'':(typeof m.value==='number'
-      ?m.value.toLocaleString('zh-CN',{maximumFractionDigits:2}):m.value);
-    return '<div class="stat"><div class="v">'+escHtml(String(v))+'</div><div class="k">'+escHtml(m.label)+'</div></div>';
+    var v=(m.value==null)?'':String(m.value);
+    return '<div class="stat"><div class="v">'+escHtml(v)+'</div><div class="k">'+escHtml(m.label)+'</div></div>';
   }).join('')||(j.summary?'':'');}
   var st='';
   if(given){
@@ -335,8 +352,9 @@ def nav(active=""):
            f'<div class="nav-links">{links}</div>' \
            f'<div class="nav-right"><span class="badge"><span class="dot"></span>服务运行中</span><span class="version">v{__version__}</span></div></div></nav>'
 
-def page(title, body, script="", active=""):
-    return PAGE.replace("__TITLE__", title).replace("__NAV__", nav(active)) \
+def page(title, body, script="", active="", nav_html=None):
+    return PAGE.replace("__TITLE__", title) \
+               .replace("__NAV__", nav(active) if nav_html is None else nav_html) \
                .replace("__BODY__", body).replace("__SCRIPT__", script).encode()
 
 
@@ -385,6 +403,7 @@ def render_list(h, store, reports_dir):
                 f'<td class="num">{max_rows:,}</td>'
                 f'<td class="updated">{mtime}</td>'
                 f'<td><div class="ops"><a class="op" href="/r/{rid}">打开</a>'
+                f'<a class="op" href="/pv/{rid}" target="_blank" rel="noopener" title="在新窗口打开只读预览页">预览</a>'
                 f'<a class="op" href="/edit/{rid}">编辑</a>'
                 f'<a class="op" href="#" onclick="copyText(location.origin+\'/r/{rid}\');return false">复制链接</a>'
                 f'<a class="op danger" href="#" onclick="delReport(\'{rid}\');return false">删除</a></div></td></tr>')
@@ -497,6 +516,9 @@ def render_editor(h, store, reports_dir, rid):
     else:
         grp, base_id = "", (rid or "")
     blocks_json = esc_html(json.dumps(r.get("blocks") or [], ensure_ascii=False, indent=2))
+    p_types_opts = "".join(f'<option value="{k}">{v}</option>' for k, v in
+                           (("text", "文本"), ("select", "下拉"), ("date", "日期"),
+                            ("daterange", "日期范围"), ("number", "数字"), ("numrange", "数字范围")))
     body = f"""<div class="crumb">报表列表 / <b>{title}</b></div>
         <div class="pagehead"><div><h1>{title}</h1><div class="sub">保存后即可获得独立访问 URL</div></div>
         <div style="display:flex;gap:8px"><a class="btn btn-secondary" href="/">取消</a>
@@ -543,12 +565,46 @@ def render_editor(h, store, reports_dir, rid):
         <code style="color:var(--brand-strong)">含未填参数的整行占位条件会自动跳过；下拉/文本候选值默认取绑定字段去重，候选SQL仅提供选项</code></div>
         </div>
         </div>
-        </form>"""
+        </form>
+        <div class="drawer-mask hidden" id="pd-mask" onclick="closeDrawer()"></div>
+        <aside class="drawer" id="pdrawer" aria-hidden="true">
+          <div class="drawer-head"><h3 id="pd-title">参数配置</h3>
+          <button type="button" class="btn-icon" title="关闭" onclick="closeDrawer()">✕</button></div>
+          <div class="drawer-body">
+            <div class="pr-sec" style="border-top:none;margin-top:0;padding-top:0">
+              <div class="pr-sec-t">基本信息</div>
+              <div class="pr-grid">
+                <div class="field" style="grid-column:1/-1"><label>显示名</label><input id="pd-label" placeholder="如：区域" oninput="pdCommit();renderParams()"></div>
+                <div class="field"><label>参数ID</label><input id="pd-id" placeholder="如：region" oninput="pdCommit();renderParams()" title="SQL 中用 {{参数ID}} 引用"></div>
+                <div class="field"><label>类型</label><select id="pd-type" onchange="pdCommit();updDrawer()">{p_types_opts}</select></div>
+                <div class="field"><label>默认值</label><input id="pd-default" oninput="pdCommit()"></div>
+                <div class="field" id="pd-rngbox"><label>范围模式</label><label class="switch"><input type="checkbox" id="pd-range" style="display:none" onchange="pdCommit();this.parentNode.classList.toggle('on',this.checked)"></label></div>
+              </div>
+            </div>
+            <div class="pr-sec">
+              <div class="pr-sec-t">数据绑定<span class="p-bindhint" id="pd-bindhint"></span></div>
+              <div class="pr-grid">
+                <div class="field"><label>数据集</label><select id="pd-srcds" onchange="pdCommit();loadFields()"></select></div>
+                <div class="field" style="grid-column:1/-1"><label>过滤字段（选中后自动填参数ID/显示名）</label>
+                <div class="range"><select id="pd-srcfield" data-cur="" onchange="pdFieldChanged()"><option value="">不绑定（不过滤）</option></select>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="loadFields()">刷新字段</button></div></div>
+              </div>
+            </div>
+            <div class="pr-sec" id="pd-optbox"><div class="pr-sec-t">手动下拉选项<span class="p-bindhint">逗号分隔；未绑定字段时使用</span></div><input id="pd-options" placeholder="如：待审批,已通过,已驳回" oninput="pdCommit()"></div>
+            <div class="pr-sec" id="pd-srcsqlbox"><div class="pr-sec-t">候选值 SQL（可选，仅用于下拉/文本候选值，不参与过滤）</div><textarea id="pd-srcsql" rows="3" style="width:100%;font-family:var(--font-mono);font-size:12px" placeholder="SELECT DISTINCT 字段 FROM ... WHERE 其它字段 = '{{其它参数id}}'" oninput="pdCommit()"></textarea></div>
+          </div>
+          <div class="drawer-foot">
+            <button type="button" class="btn btn-secondary" onclick="closeDrawer()">取消</button>
+            <button type="button" class="btn btn-primary" onclick="closeDrawer()">完成</button>
+          </div>
+        </aside>"""
     script = """
 let params = %(params)s;
 let datasets = %(datasets)s;
 const DSS = %(dss)s;
 const MERGE = %(merge)s;
+const ORIG = %(orig)s;
+let dIdx=-1;
 const TYPES = {text:'文本', select:'下拉', date:'日期', daterange:'日期范围', number:'数字', numrange:'数字范围'};
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')}
 function dsOpts(sel){return DSS.map(k=>`<option value="${esc(k)}"${k===sel?' selected':''}>${esc(k)}</option>`).join('')}
@@ -565,8 +621,8 @@ function addDs(d){d = d || {name:'', ds:DSS[0]||'', sql:''};
     </div>
     <textarea class="dsql" rows="4" style="width:100%%;font-family:var(--font-mono);font-size:12.5px" placeholder="SELECT ... WHERE dt BETWEEN '{{d.begin}}' AND '{{d.end}}'">${esc(d.sql)}</textarea>
     <div class="pv"></div>`;
-  document.getElementById('dlist').appendChild(div);updMerge();refreshSrcDs();}
-function rmDs(btn){btn.closest('#dlist > div').remove();updMerge();refreshSrcDs();}
+  document.getElementById('dlist').appendChild(div);updMerge();refreshDsSel();}
+function rmDs(btn){btn.closest('#dlist > div').remove();updMerge();refreshDsSel();}
 function collectDs(){return [...document.querySelectorAll('#dlist > div')].map(d=>({
   name:d.querySelector('.dname').value.trim()||'main',
   ds:d.querySelector('.dds').value,
@@ -595,49 +651,93 @@ async function pv(btn){const block=btn.closest('#dlist > div');const out=block.q
     body:JSON.stringify({ds:block.querySelector('.dds').value,sql:block.querySelector('.dsql').value,params:collect()})});
   const j = await res.json();
   tblShow(out,j,200);}
-function syncName(row){
-  row.querySelector('.pr-name').textContent =
-    row.querySelector('.p-label').value || row.querySelector('.p-id').value || '未命名参数';}
-function syncRow(row){
-  const t=row.querySelector('.p-type').value;
-  const isRng=t==='date'||t==='number';
-  row.querySelector('.p-rngbox').style.display = isRng ? '' : 'none';
-  row.querySelector('.p-optbox').style.display = t==='select' ? '' : 'none';
-  row.querySelector('.f-srcsql').style.display = (t==='select'||t==='text') ? '' : 'none';
-  row.querySelector('.p-bindhint').textContent =
-    t==='select' ? '选项默认取绑定字段去重值；填了候选SQL则用SQL取值'
-    : t==='text' ? '绑定字段后为文本输入提供候选值'
-    : '绑定字段后，查询时自动按该字段过滤（范围类型生成 ≥/≤ 条件）';
-  row.querySelector('.pr-tag').textContent = TYPES[t];
-  syncName(row);}
-function refreshSrcDs(){
-  document.querySelectorAll('#plist .p-srcds').forEach(function(sel){
-    const cur=sel.value;
-    sel.innerHTML=datasets.map(x=>'<option'+(x.name===cur?' selected':'')+'>'+esc(x.name)+'</option>').join('');
-  });
-  document.querySelectorAll('#plist .pr').forEach(function(row){
-    const ds=row.querySelector('.p-srcds');
-    if(ds.value && !row.querySelector('.p-srcfield').getAttribute('data-loaded'))loadFields(ds);
-  });
+function renderParams(){
+  const list=document.getElementById('plist');
+  if(!params.length){list.innerHTML='<div class="empty-sm">尚未添加参数，点下方「＋ 加参数」添加</div>';return;}
+  list.innerHTML=params.map(function(p,i){
+    return '<div class="pr-row">'
+      +'<span class="pr-tag">'+esc(TYPES[p.type]||'未设类型')+'</span>'
+      +'<span class="pr-name" title="点击配置">'+esc(p.label||p.id||'未命名参数')+'</span>'
+      +(p.id?'<code class="pr-id">'+esc(p.id)+'</code>':'')
+      +'<span class="pr-sp"></span>'
+      +'<span class="pr-ops">'
+      +'<button type="button" class="btn btn-secondary btn-sm" onclick="openParamDrawer('+i+')">配置</button>'
+      +'<button type="button" class="btn-icon" title="上移" onclick="mvParam('+i+',-1)">↑</button>'
+      +'<button type="button" class="btn-icon" title="下移" onclick="mvParam('+i+',1)">↓</button>'
+      +'<button type="button" class="btn-icon" title="删除参数" onclick="prmDel('+i+')">✕</button>'
+      +'</span></div>';
+  }).join('');
 }
-function fldChanged(sel){
-  const row=sel.closest('.pr');
-  sel.setAttribute('data-cur',sel.value);
-  if(!sel.value)return;
-  const id=row.querySelector('.p-id');
-  if(!id.value)id.value=sel.value;
-  const lb=row.querySelector('.p-label');
-  if(!lb.value)lb.value=sel.value;
-  syncName(row);
+function openParamDrawer(i){
+  dIdx=i;
+  const p=params[i];
+  if(p.source && p.source.mode==='sql'){p.source.mode='field';p.source.field=p.source.field||'';}
+  document.getElementById('pd-title').textContent='参数 '+(i+1)+(p.id?(' · '+p.id):'');
+  document.getElementById('pd-label').value=p.label||'';
+  document.getElementById('pd-id').value=p.id||'';
+  document.getElementById('pd-type').value=p.type||'text';
+  document.getElementById('pd-default').value=p.default||'';
+  document.getElementById('pd-options').value=p.options||'';
+  document.getElementById('pd-srcsql').value=(p.source&&p.source.sql)||'';
+  const rng=document.getElementById('pd-range');
+  rng.checked=!!p.range;rng.parentNode.classList.toggle('on',!!p.range);
+  const dsSel=document.getElementById('pd-srcds');
+  dsSel.innerHTML=datasets.map(x=>'<option'+(x.name===((p.source||{}).ds||'')?' selected':'')+'>'+esc(x.name)+'</option>').join('');
+  const fld=document.getElementById('pd-srcfield');
+  fld.setAttribute('data-cur',(p.source||{}).field||'');
+  fld.removeAttribute('data-loaded');
+  fld.innerHTML='<option value="">不绑定（不过滤）</option>';
+  if(dsSel.value)loadFields();
+  updDrawer();
+  document.getElementById('pdrawer').classList.add('open');
+  document.getElementById('pdrawer').setAttribute('aria-hidden','false');
+  document.getElementById('pd-mask').classList.remove('hidden');
+  document.getElementById('pd-label').focus();
 }
-function loadFields(el){
-  const row=el.closest('.pr');
-  const d=collectDs().find(function(x){return x.name===row.querySelector('.p-srcds').value;});
+function closeDrawer(){
+  if(dIdx>=0){pdCommit();renderParams();}
+  dIdx=-1;
+  document.getElementById('pdrawer').classList.remove('open');
+  document.getElementById('pdrawer').setAttribute('aria-hidden','true');
+  document.getElementById('pd-mask').classList.add('hidden');
+}
+function pdCommit(){
+  if(dIdx<0||dIdx>=params.length)return;
+  const p=params[dIdx];
+  p.label=document.getElementById('pd-label').value;
+  p.id=document.getElementById('pd-id').value;
+  p.type=document.getElementById('pd-type').value;
+  p.default=document.getElementById('pd-default').value;
+  p.options=document.getElementById('pd-options').value;
+  const rng=document.getElementById('pd-range');
+  if(rng)p.range=rng.checked;
+  const ds=document.getElementById('pd-srcds').value;
+  const field=document.getElementById('pd-srcfield').value;
+  const sql=document.getElementById('pd-srcsql').value.trim();
+  if(ds && (field||sql)){p.source={mode:'field',ds:ds,field:field};if(sql)p.source.sql=sql;}
+  else p.source=null;
+}
+function updDrawer(){
+  if(dIdx<0)return;
+  const t=params[dIdx].type;
+  const isRng=(t==='date'||t==='number');
+  document.getElementById('pd-rngbox').style.display=isRng?'':'none';
+  if(!isRng){const rng=document.getElementById('pd-range');rng.checked=false;rng.parentNode.classList.remove('on');}
+  document.getElementById('pd-optbox').style.display=t==='select'?'':'none';
+  document.getElementById('pd-srcsqlbox').style.display=(t==='select'||t==='text')?'':'none';
+  document.getElementById('pd-bindhint').textContent=
+    t==='select'?'选项默认取绑定字段去重值；填了候选SQL则用SQL取值'
+    :t==='text'?'绑定字段后为文本输入提供候选值'
+    :'绑定字段后，查询时自动按该字段过滤（范围类型生成 ≥/≤ 条件）';
+}
+function loadFields(){
+  if(dIdx<0)return;
+  const d=collectDs().find(function(x){return x.name===document.getElementById('pd-srcds').value;});
   if(!d){toast('请先选择数据集（若列表为空请先添加数据集）','err');return;}
-  const sel=row.querySelector('.p-srcfield');
+  const sel=document.getElementById('pd-srcfield');
   sel.innerHTML='<option value="">加载中…</option>';
   const defaults={};
-  collect().forEach(function(p){defaults[p.id]=p.default||'';});
+  params.forEach(function(p){defaults[p.id]=p.default||'';});
   fetch('/ds-fields',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({ds_src:d.ds, sql:d.sql, values:defaults})})
    .then(function(r){return r.json();}).then(function(j){
@@ -646,62 +746,56 @@ function loadFields(el){
      sel.innerHTML='<option value="">不绑定（不过滤）</option>'+j.fields.map(function(f){return '<option>'+esc(f)+'</option>';}).join('');
      const cur=sel.getAttribute('data-cur');
      if(cur&&j.fields.indexOf(cur)>=0)sel.value=cur;
+     else sel.value='';
+     pdFieldChanged();
    });
 }
-function prmDel(btn){btn.closest('.pr').remove();}
-function addp(p){p = p || {id:'',label:'',type:'select',options:'',default:'',range:false,source:null};
-  const src = p.source||{};
-  if(src.mode==='sql'){src.mode='field';src.field=src.field||'';}
-  const ds = src.ds||'';
-  const d = document.createElement('div');
-  d.className = 'pr';
-  d.innerHTML = `
-    <div class="pr-head">
-      <span class="pr-tag">${esc(TYPES[p.type]||'')}</span>
-      <span class="pr-name">${esc(p.label||p.id||'未命名参数')}</span>
-      <span class="pr-sp"></span>
-      <button type="button" class="btn-icon" title="删除参数" onclick="prmDel(this)">✕</button>
-    </div>
-    <div class="pr-grid">
-      <div class="field"><label>参数ID</label><input class="p-id" placeholder="选字段后自动填" value="${esc(p.id)}"></div>
-      <div class="field"><label>显示名</label><input class="p-label" placeholder="显示名" value="${esc(p.label)}"></div>
-      <div class="field"><label>类型</label><select class="p-type" onchange="syncRow(this.closest('.pr'))">${Object.entries(TYPES).map(([k,v])=>`<option value="${k}"${p.type===k?' selected':''}>${v}</option>`).join('')}</select></div>
-      <div class="field"><label>默认值</label><input class="p-default" placeholder="默认" value="${esc(p.default||'')}"></div>
-      <div class="field p-rngbox" style="display:none"><label>范围模式</label><label class="switch${p.range?' on':''}"><input type="checkbox" class="p-range" style="display:none"${p.range?' checked':''} onchange="this.parentNode.classList.toggle('on',this.checked)"></label></div>
-    </div>
-    <div class="pr-sec">
-      <div class="pr-sec-t">数据绑定<span class="p-bindhint"></span></div>
-      <div class="pr-grid">
-        <div class="field"><label>数据集</label><select class="p-srcds" onchange="this.closest('.pr').querySelector('.p-srcfield').removeAttribute('data-loaded');loadFields(this)">${datasets.map(x=>`<option${x.name===ds?' selected':''}>${esc(x.name)}</option>`).join('')}</select></div>
-        <div class="field" style="grid-column:1/-1"><label>过滤字段（选中后自动填参数ID/显示名）</label><div class="range"><select class="p-srcfield" data-cur="${esc(src.field||'')}" onchange="fldChanged(this)"><option value="">不绑定（不过滤）</option></select><button type="button" class="btn btn-secondary btn-sm" onclick="loadFields(this)">刷新字段</button></div></div>
-      </div>
-    </div>
-    <div class="pr-sec p-optbox"><div class="pr-sec-t">手动下拉选项<span class="p-bindhint">逗号分隔；未绑定字段时使用</span></div><div class="field" style="flex:1"><input class="p-options" placeholder="如：待审批,已通过,已驳回" value="${esc(p.options||'')}"></div></div>
-    <div class="pr-sec f-srcsql"><div class="pr-sec-t">候选值 SQL（可选，仅用于下拉/文本候选值，不参与过滤）</div><textarea class="p-srcsql" rows="2" style="width:100%%;font-family:var(--font-mono);font-size:12px" placeholder="SELECT DISTINCT 字段 FROM ... WHERE 其它字段 = '{{其它参数id}}'">${esc(src.sql||'')}</textarea></div>`;
-  document.getElementById('plist').appendChild(d);
-  d.querySelector('.p-id').addEventListener('input',function(){syncName(d);});
-  d.querySelector('.p-label').addEventListener('input',function(){syncName(d);});
-  syncRow(d);
-  const sel=d.querySelector('.p-srcds');
-  if(sel.value && !d.querySelector('.p-srcfield').getAttribute('data-loaded'))loadFields(sel);}
-function collectParam(row){
-  const p = {id:row.querySelector('.p-id').value.trim(), label:row.querySelector('.p-label').value,
-    type:row.querySelector('.p-type').value, options:row.querySelector('.p-options').value,
-    default:row.querySelector('.p-default').value};
-  const rng = row.querySelector('.p-range');
-  if(rng && (p.type==='date'||p.type==='number')){p.range = rng.checked;}
-  const ds = row.querySelector('.p-srcds').value;
-  const field = row.querySelector('.p-srcfield').value;
-  const sql = (row.querySelector('.p-srcsql').value||'').trim();
-  if(ds && (field || sql)){
-    p.source = {mode:'field', ds:ds, field:field};
-    if(sql)p.source.sql = sql;}
-  return p;}
-function collect(){return [...document.querySelectorAll('#plist .pr')].map(collectParam).filter(function(p){return p.id;});}
+function pdFieldChanged(){
+  const sel=document.getElementById('pd-srcfield');
+  sel.setAttribute('data-cur',sel.value);
+  pdCommit();
+  if(!sel.value)return;
+  const id=document.getElementById('pd-id'),lb=document.getElementById('pd-label');
+  if(!id.value)id.value=sel.value;
+  if(!lb.value)lb.value=sel.value;
+  pdCommit();
+  renderParams();
+}
+function refreshDsSel(){
+  if(dIdx<0)return;
+  const sel=document.getElementById('pd-srcds'),cur=sel.value;
+  sel.innerHTML=datasets.map(x=>'<option'+(x.name===cur?' selected':'')+'>'+esc(x.name)+'</option>').join('');
+  if(cur&&sel.value!==cur){
+    const fld=document.getElementById('pd-srcfield');
+    fld.removeAttribute('data-loaded');fld.setAttribute('data-cur','');
+    fld.innerHTML='<option value="">不绑定（不过滤）</option>';
+    pdCommit();
+  }
+}
+function mvParam(i,dir){
+  const j=i+dir;
+  if(j<0||j>=params.length)return;
+  const t=params[i];params[i]=params[j];params[j]=t;
+  if(dIdx===i)dIdx=j;else if(dIdx===j)dIdx=i;
+  renderParams();
+  if(dIdx>=0)openParamDrawer(dIdx);
+}
+function prmDel(i){
+  if(dIdx>=0)closeDrawer();
+  params.splice(i,1);
+  renderParams();
+}
+function addp(){
+  params.push({id:'',label:'',type:'select',options:'',default:'',range:false,source:null});
+  renderParams();
+  openParamDrawer(params.length-1);
+}
+function collect(){return params.filter(function(p){return p.id;});}
 async function save(e){e.preventDefault();
   var g=(document.getElementById('rgrp').value||'').trim();
   var rid=(g?g+'/':'')+(%(rid)s||'');
-  const all = [...document.querySelectorAll('#plist .pr')].map(collectParam);
+  if(!document.getElementById('rname').value.trim()){toast('报表名称不能为空','err');return;}
+  const all = params;
   for(const p of all){
     if(!p.id){toast('存在未填参数ID的参数，请补全或删除','err');return;}
     if(p.type==='select' && !p.source && !(p.options||'').trim()){toast('参数「'+(p.label||p.id)+'」为下拉类型，请绑定过滤字段或填写手动选项','err');return;}}
@@ -711,7 +805,7 @@ async function save(e){e.preventDefault();
     try{blocks=JSON.parse(btxt);}
     catch(err){toast('分析块 JSON 解析失败：'+err.message,'err');return;}}
   const res = await fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({id:rid,name:document.getElementById('rname').value,
+    body:JSON.stringify({id:rid,orig_id:ORIG,name:document.getElementById('rname').value,
       cache_ttl:parseInt(document.getElementById('rcache').value)||0,
       max_rows:parseInt(document.getElementById('rmax').value)||0,
       export_format:document.getElementById('rexp').value,
@@ -726,12 +820,13 @@ document.getElementById('mmode').value = MERGE.mode || 'union';
 document.getElementById('mon').value = (MERGE.on||[]).join(',');
 document.getElementById('mcols').value = (MERGE.cols||[]).join(',');
 datasets.forEach(d=>addDs(d));
-params.forEach((p,i)=>addp(p));
+renderParams();
 """ % {"params": json.dumps(r["params"], ensure_ascii=False),
    "datasets": json.dumps(datasets, ensure_ascii=False),
    "dss": json.dumps(dss),
    "merge": json.dumps(merge, ensure_ascii=False),
-   "rid": json.dumps(base_id) if base_id else "null"}
+   "rid": json.dumps(base_id) if base_id else "null",
+   "orig": json.dumps(rid) if rid else "null"}
     h._send(page(title, body, script, "editor"))
 
 def param_form(r, given):
@@ -790,7 +885,7 @@ def param_form(r, given):
             html += f'<div class="field"><label>{label}</label><input name="{pid}" value="{esc_html(dv)}"></div>'
     return html
 
-def render_viewer(h, store, reports_dir, rid, args):
+def render_viewer(h, store, reports_dir, rid, args, lite=False):
     path = os.path.join(reports_dir, rid + ".json")
     if not os.path.exists(path):
         return h._err(f"报表不存在: {rid}")
@@ -899,5 +994,23 @@ loadOptions().then(function(){
    "page": int(r.get("page_size") or 20),
    "auto": "true" if r.get("query_mode") == "auto" else "false",
    "hasargs": "true" if args else "false"}
+    if lite:
+        # 轻量只读预览：仅名称 / 查询 / 导出 / 数据区，无导航与任何编辑/新建入口（普通用户视角）
+        lbody = f"""<div class="pv-head"><span class="pv-title">{name}</span></div>
+        <form method="get" action="/pv/{rid}" id="ff">
+        <div class="card" style="padding:18px">
+          <div class="parambar">{form}</div>
+          <div class="actbar">
+            <button type="submit" class="btn btn-primary">查询</button>
+            <button type="button" class="btn btn-secondary" onclick="exp()">导出</button>
+            <select id="fexp" title="导出格式">{fmt_opts}</select>
+          </div>
+        </div></form>
+        <div id="kpi" class="stat-grid" style="margin-top:16px"></div>
+        <div class="card" style="margin-top:16px"><div id="out" style="min-height:120px">
+        <div class="empty" style="padding:40px 20px"><div class="il">🔍</div><h4>设置条件后点「查询」</h4></div>
+        </div></div>"""
+        h._send(page(name, lbody, script, "", ""))
+        return
     h._send(page(name, body, script, ""))
 

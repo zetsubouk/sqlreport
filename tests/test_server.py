@@ -801,6 +801,67 @@ class PrintStyleTest(ServerTestCase):
         self.assertIn("@media print", body)
 
 
+class PreviewLiteTest(ServerTestCase):
+    """列表页「预览」新窗口打开 /pv/{rid} 轻量只读页（仅名称/查询/导出/数据区，无导航与编辑入口）。"""
+
+    def _save(self, rid="pv1"):
+        self.save_report({"name": "预览报表", "ds": "demo",
+                          "sql": "SELECT * FROM orders", "params": [], "cache_ttl": 0}, rid)
+
+    def test_preview_lite_page(self):
+        self._save()
+        st, body = self.get("/pv/pv1")
+        self.assertEqual(st, 200)
+        self.assertIn("预览报表", body)                 # 报表名称
+        self.assertNotIn('<nav class="nav"', body)     # 无导航（不能切回列表/设计/新建）
+        self.assertNotIn('href="/edit/', body)         # 无编辑入口
+        self.assertNotIn('href="/new"', body)          # 无新建入口
+        self.assertIn('id="ff"', body)                 # 查询表单
+        self.assertIn("exp()", body)                   # 导出
+        self.assertIn('id="out"', body)                # 数据区域
+
+    def test_preview_lite_queries_data(self):
+        # 轻量页与完整查看页共用 /q 查询链路，数据仍可取
+        self._save()
+        st, _ = self.get("/pv/pv1")
+        self.assertEqual(st, 200)
+        st, q = self.post_json("/q/pv1", {})
+        self.assertEqual(st, 200)
+        self.assertEqual(len(json.loads(q)["rows"]), 5)
+
+    def test_preview_lite_missing_report(self):
+        st, _ = self.get("/pv/ghost")
+        self.assertEqual(st, 400)
+
+    def test_list_has_preview_button_new_window(self):
+        self._save("pv2")
+        st, body = self.get("/")
+        self.assertEqual(st, 200)
+        # 预览 = 新窗口打开独立只读页（非页内 iframe 弹窗）
+        self.assertIn('href="/pv/pv2" target="_blank"', body)
+        self.assertNotIn('id="pvm"', body)               # 已移除页内弹窗容器
+        self.assertNotIn("showPv(", body)
+
+    def test_list_no_preview_modal_anytime(self):
+        st, body = self.get("/")
+        self.assertEqual(st, 200)
+        self.assertNotIn('id="pvm"', body)               # 列表页无任何预览弹窗残留
+
+    def test_token_mode_guards_preview(self):
+        # 访问控制与 /r 一致：token 模式下 /pv 同样需要有效 ?t=
+        rec = {"name": "鉴权预览", "ds": "demo", "sql": "SELECT region FROM orders", "params": []}
+        self.save_report(rec, "pvtok")
+        with open(self.config_file, "w") as f:
+            json.dump({"auth": "token", "token_secret": "s3cret"}, f)
+        st, _ = self.get("/pv/pvtok")
+        self.assertEqual(st, 401)
+        t = hmac.new(b"s3cret", b"pvtok" + time.strftime("%Y%m%d").encode(),
+                     hashlib.sha256).hexdigest()[:16]
+        st, body = self.get("/pv/pvtok?t=" + t)
+        self.assertEqual(st, 200)
+        self.assertIn("鉴权预览", body)
+
+
 class TokenAuthTest(ServerTestCase):
     """token 鉴权（Task 21）：auth=token 可选开关；三类数据出口（/r /q /export）+ 管理面纳管。
 
@@ -988,6 +1049,94 @@ class GroupedReportsTest(ServerTestCase):
         # 新建页有分组输入框
         st, body = self.get("/new")
         self.assertIn('id="rgrp"', body)
+
+    # ---- Bug#1：空名称校验 + 改分组时移动旧文件 ----
+    def test_save_rejects_empty_name(self):
+        st, body = self.post_json("/save", {"id": "noname", "name": "", "ds": "demo",
+                                            "sql": "SELECT region FROM orders", "params": []})
+        j = json.loads(body)
+        self.assertIn("error", j)
+        self.assertIn("名称不能为空", j["error"])
+        self.assertFalse(os.path.exists(os.path.join(self.reports_dir, "noname.json")))
+        st, body = self.post_json("/save", {"name": "  ", "ds": "demo",
+                                            "sql": "SELECT region FROM orders", "params": []})
+        self.assertIn("error", json.loads(body))
+
+    def test_save_moves_old_file_when_regrouped(self):
+        # 编辑根报表并加分组：旧文件应被删除（移动而非复制），列表不再残留空名报表
+        self.save_report({"name": "旧名", "ds": "demo", "sql": "SELECT region FROM orders",
+                          "params": []}, "mv1")
+        st, body = self.post_json("/save", {"id": "sales/mv1", "orig_id": "mv1",
+                                            "name": "新名", "ds": "demo",
+                                            "sql": "SELECT region FROM orders", "params": []})
+        self.assertEqual(st, 200, body)
+        self.assertFalse(os.path.exists(os.path.join(self.reports_dir, "mv1.json")),
+                         "改分组后根目录旧文件应删除")
+        self.assertTrue(os.path.exists(os.path.join(self.reports_dir, "sales", "mv1.json")))
+        with open(os.path.join(self.reports_dir, "sales", "mv1.json"), encoding="utf-8") as f:
+            rec = json.load(f)
+        self.assertEqual(rec["name"], "新名")
+        # 移出分组：分组旧文件删除，根目录新文件存在
+        st, body = self.post_json("/save", {"id": "mv1", "orig_id": "sales/mv1",
+                                            "name": "新名2", "ds": "demo",
+                                            "sql": "SELECT region FROM orders", "params": []})
+        self.assertEqual(st, 200, body)
+        self.assertFalse(os.path.exists(os.path.join(self.reports_dir, "sales", "mv1.json")))
+        self.assertTrue(os.path.exists(os.path.join(self.reports_dir, "mv1.json")))
+
+    def test_save_same_rid_no_move(self):
+        # 未改分组：orig_id == rid，旧文件保留（不误删）
+        self.save_report({"name": "原", "ds": "demo", "sql": "SELECT region FROM orders",
+                          "params": []}, "keep1")
+        st, body = self.post_json("/save", {"id": "keep1", "orig_id": "keep1",
+                                            "name": "改后", "ds": "demo",
+                                            "sql": "SELECT region FROM orders", "params": []})
+        self.assertEqual(st, 200, body)
+        self.assertTrue(os.path.exists(os.path.join(self.reports_dir, "keep1.json")))
+
+    # ---- Bug#2：单数据集非 main 名称保存后不再复位 ----
+    def test_save_single_dataset_nonmain_name_preserved(self):
+        self.save_report({"name": "数据集", "ds": "demo",
+                          "sql": "SELECT region FROM orders", "params": []}, "nm1")
+        # 仅发 datasets（单数据集改名 sales）→ 应落 datasets 格式保留名称
+        st, body = self.post_json("/save", {"id": "nm1", "orig_id": "nm1", "name": "数据集",
+                                            "datasets": [{"name": "sales", "ds": "demo",
+                                                          "sql": "SELECT region FROM orders"}],
+                                            "params": []})
+        self.assertEqual(st, 200, body)
+        with open(os.path.join(self.reports_dir, "nm1.json"), encoding="utf-8") as f:
+            rec = json.load(f)
+        self.assertEqual(rec["datasets"][0]["name"], "sales")
+        self.assertNotIn("ds", rec)
+        # 重进编辑器数据集名称应为 sales（而非复位为 main）
+        st, body = self.get("/edit/nm1")
+        self.assertIn('"sales"', body)
+        # 改名后查询正常
+        _, body = self.post_json("/q/nm1", {})
+        self.assertEqual(json.loads(body)["columns"], ["region"])
+
+    # ---- Bug#3：尾分号 SQL 包裹子查询不再被只读校验误判 ----
+    def test_ds_fields_trailing_semicolon(self):
+        sql = "SELECT order_id, region, amount, dt FROM orders;"
+        st, body = self.post_json("/ds-fields", {"ds_src": "demo", "sql": sql, "values": {}})
+        self.assertEqual(st, 200, body)
+        j = json.loads(body)
+        self.assertNotIn("error", j)
+        self.assertIn("region", j["fields"])
+        self.assertIn("amount", j["fields"])
+
+    def test_query_with_bound_field_and_trailing_semicolon(self):
+        # 字段绑定自动过滤：包一层 SELECT 前剔除尾分号
+        self.save_report({"name": "尾分号", "ds": "demo",
+                          "sql": "SELECT * FROM orders;",
+                          "params": [{"id": "r", "type": "text",
+                                      "source": {"mode": "field", "ds": "main", "field": "region"}}],
+                          "cache_ttl": 0}, "semi")
+        st, body = self.post_json("/q/semi", {"r": "华东"})
+        self.assertEqual(st, 200, body)
+        j = json.loads(body)
+        self.assertNotIn("error", j)
+        self.assertEqual(len(j["rows"]), 2)
 
 
 if __name__ == "__main__":

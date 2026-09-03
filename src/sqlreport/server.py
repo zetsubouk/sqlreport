@@ -11,7 +11,8 @@ import base64, hashlib, hmac, json, os, re, secrets, sys, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from sqlreport import views_report
-from sqlreport.db import CACHE, DS_STORE, load_json, run_query, merge_union, merge_lookup
+from sqlreport.db import (CACHE, DS_STORE, load_json, run_query, strip_semicolon,
+                          merge_union, merge_lookup)
 from sqlreport.params import build_values, substitute, normalize_report, esc, normalize_blocks
 from sqlreport.analytics import (total_row, summary_metrics, top_n_rows, add_share_columns,
                                  bucket_column, pivot, diff_merge, bin_numeric, _to_num)
@@ -192,6 +193,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._check_token(m.group(1), args):
                     return self._err("需要有效的访问 token（?t=…）；请向报表提供方索取分享链接", 401)
                 return self._viewer(m.group(1), args)
+            # 轻量只读预览（列表页弹窗）：无导航/编辑入口，访问控制与 /r 一致
+            m = re.match(r"^/pv/([^/]+(?:/[^/]+)?)$", path)
+            if m:
+                if not _valid_rid(m.group(1)):
+                    return self._err("报表 ID 不合法", 404)
+                if not self._check_token(m.group(1), args):
+                    return self._err("需要有效的访问 token（?t=…）；请向报表提供方索取分享链接", 401)
+                return self._viewer(m.group(1), args, lite=True)
             return self._err("404")
         except Exception as e:
             return self._err(f"错误：{e}", 500)
@@ -470,8 +479,8 @@ updType();
         self._send(*self._json_res({"ok": True}))
 
 
-    def _viewer(self, rid, args):
-        return views_report.render_viewer(self, DS_STORE, REPORTS_DIR, rid, args)
+    def _viewer(self, rid, args, lite=False):
+        return views_report.render_viewer(self, DS_STORE, REPORTS_DIR, rid, args, lite)
 
     # ---- 接口 ----
     def _save(self, data):
@@ -489,7 +498,10 @@ updType();
                 rid = prefix + secrets.token_hex(8)
                 if not os.path.exists(os.path.join(REPORTS_DIR, rid + ".json")):
                     break
-        rec = {"name": data["name"], "params": data.get("params", []),
+        name = (data.get("name") or "").strip()
+        if not name:
+            raise ValueError("报表名称不能为空")
+        rec = {"name": name, "params": data.get("params", []),
                "cache_ttl": int(data.get("cache_ttl") or 0),  # 0 = 实时（不缓存）
                "max_rows": int(data.get("max_rows") or 0)}     # 0 = 缺省 2000（保留用户配置）
         # 参数来源归一化：旧 mode:'sql'（自定义SQL取值）→ mode:'field' + field 空（field=过滤绑定，SQL=候选值）
@@ -531,9 +543,10 @@ updType();
                              "params": dict(v.get("params") or {})}
                             for v in data["views"]
                             if isinstance(v, dict) and str(v.get("name", "")).strip()]
-        # 双格式兼容：归一化后仅 1 个数据集 → 写回旧 {ds, sql} 格式（旧文件 diff 稳定）；≥2 个才写 datasets
+        # 双格式兼容：仅当「单数据集且名称为默认 main」才写回旧 {ds, sql} 格式（旧文件 diff 稳定）；
+        # 单数据集改了名称 → 落 datasets 格式以保留名称（Bug#2：否则保存后名称复位为 main）
         datasets = normalize_report(data, DS_STORE.visible_names())
-        if len(datasets) == 1:
+        if len(datasets) == 1 and datasets[0]["name"] == "main":
             rec["ds"], rec["sql"] = datasets[0]["ds"], datasets[0]["sql"]
         else:
             rec["datasets"] = datasets
@@ -551,6 +564,14 @@ updType();
             json.dump(rec, f, ensure_ascii=False, indent=2)
         os.replace(tmp, path)  # 原子写，防半写损坏
         CACHE.invalidate(rid)  # 报表定义已变更，清空该报表全部缓存条目
+        # 编辑时改分组/移出分组 → 旧路径文件一并删除（移动而非复制，Bug#1：
+        # 避免根目录残留同名空名报表，分组报表不再出现在默认报表列表）
+        orig = (data.get("orig_id") or "").strip().lower()
+        if orig and orig != rid and _valid_rid(orig):
+            old_path = os.path.join(REPORTS_DIR, orig + ".json")
+            if os.path.isfile(old_path):
+                os.remove(old_path)
+                CACHE.invalidate(orig)
         self._send(json.dumps({"id": rid}), "application/json; charset=utf-8")
 
     def _load_report(self, rid):
@@ -599,7 +620,7 @@ updType();
                         f = (src.get("field") or "").strip()
                         if not re.fullmatch(r"\w+", f):  # 字段名需为合法标识符
                             continue
-                        base = substitute(d["sql"], local)
+                        base = strip_semicolon(substitute(d["sql"], local))
                         sql = (f"SELECT DISTINCT {f} AS v FROM ({base}) t "
                                f"WHERE {f} IS NOT NULL AND {f} <> ''")
                 else:
@@ -634,7 +655,7 @@ updType();
             sql = d["sql"]
         try:
             filled = build_values("", data.get("params") or [], data.get("values") or {})
-            sql = substitute(sql, filled)
+            sql = strip_semicolon(substitute(sql, filled))
             cols, rows, tr, ct = run_query(ds_src, f"SELECT * FROM ({sql}) t WHERE 1=0")
         except Exception as e:
             return self._send(*self._json_res({"fields": [], "error": str(e)}))
@@ -775,7 +796,7 @@ updType();
         if not cached:
             results, fetch_truncated = {}, False
             for d in datasets:
-                sql = substitute(d["sql"], values)
+                sql = strip_semicolon(substitute(d["sql"], values))
                 conds = flt.get(d["name"])
                 if conds:
                     sql = f"SELECT * FROM ({sql}) __flt WHERE " + " AND ".join(conds)

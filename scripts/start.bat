@@ -35,8 +35,50 @@ if !errorlevel!==0 (
 if not exist logs mkdir logs >nul 2>&1
 if not exist reports mkdir reports >nul 2>&1
 
+rem ---- 可选数据库驱动检查（pymysql/pyodbc）：缺失则引导自动安装 ----
+set MISSING=
+set NEED_INSTALL=0
+for %%m in (pymysql pyodbc) do (
+  "!PYTHON!" -c "import %%m" >nul 2>&1
+  if not !errorlevel!==0 (
+    set "MISSING=!MISSING! %%m"
+    set NEED_INSTALL=1
+  )
+)
+if !NEED_INSTALL!==1 (
+  echo.
+  echo [依赖] 检测到未安装的数据库驱动：!MISSING!
+  echo        Python：!PYTHON!，需要这些驱动才能连接 MySQL/SQL Server，仅用 SQLite 可忽略
+  set "DOINST="
+  set /p "DOINST=是否自动安装 (Y/N): "
+  if /i "!DOINST!"=="Y" (
+    "!PYTHON!" -m pip install !MISSING!
+    set VERIFY_OK=1
+    for %%m in (pymysql pyodbc) do (
+      "!PYTHON!" -c "import %%m" >nul 2>&1
+      if not !errorlevel!==0 set VERIFY_OK=0
+    )
+    if !VERIFY_OK!==1 (
+      echo [依赖] 安装完成
+    ) else (
+      echo [警告] 安装后仍无法导入，请手动执行： "!PYTHON!" -m pip install pymysql pyodbc
+    )
+  ) else (
+    echo [提示] 已跳过安装。连接 MySQL/SQL Server 前请先手动安装驱动。
+  )
+  echo.
+)
+
 echo [启动] SqlReport 端口 %PORT%  Python=!PYTHON!
-start "SqlReport" /min cmd /c ""!PYTHON!" server.py !PORT! > logs\sqlreport.log 2>&1"
+rem 服务进程：优先 pythonw（无控制台，彻底隐藏窗口）；找不到则回退最小化窗口。日志均写 logs\sqlreport.log
+set PYTOOL=
+where pythonw >nul 2>&1
+if not !errorlevel!==0 set PYTOOL=pythonw
+if defined PYTOOL (
+  start "" !PYTOOL! server.py !PORT! > logs\sqlreport.log 2>&1
+) else (
+  start "SqlReport" /min cmd /c ""!PYTHON!" server.py !PORT! > logs\sqlreport.log 2>&1"
+)
 
 timeout /t 2 /nobreak >nul
 netstat -ano | findstr ":%PORT% " | findstr LISTENING >nul 2>&1

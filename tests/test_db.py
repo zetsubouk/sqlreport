@@ -53,6 +53,25 @@ class TestSqlIsReadonly(unittest.TestCase):
         self.assertFalse(db.sql_is_readonly("-- hi\nDELETE FROM t"))
 
 
+class TestStripSemicolon(unittest.TestCase):
+    def test_plain(self):
+        self.assertEqual(db.strip_semicolon("SELECT 1"), "SELECT 1")
+
+    def test_trailing_semicolon(self):
+        self.assertEqual(db.strip_semicolon("SELECT 1;"), "SELECT 1")
+
+    def test_multiple_trailing_semicolons(self):
+        self.assertEqual(db.strip_semicolon("SELECT 1;;  "), "SELECT 1")
+
+    def test_none(self):
+        self.assertEqual(db.strip_semicolon(None), "")
+
+    def test_wrapped_subquery_passes_readonly(self):
+        # Bug#3：尾分号 + 包一层 SELECT 不再被只读校验误判为多语句
+        inner = db.strip_semicolon("SELECT a FROM t;")
+        self.assertTrue(db.sql_is_readonly(f"SELECT * FROM ({inner}) t WHERE 1=0"))
+
+
 class TestMergeUnion(unittest.TestCase):
     def test_align_by_name(self):
         left = (["id", "amt"], [("1", "10")], ["str", "num"])
