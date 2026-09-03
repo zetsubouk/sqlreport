@@ -3,6 +3,7 @@
 回归项：/q JSON 与 form 双形态（Bug#1）、缓存命中/失效、截断、数据源 CRUD、管理页保护。"""
 import base64
 import http.client
+import io
 import json
 import os
 import shutil
@@ -11,6 +12,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import zipfile
 from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -74,7 +76,7 @@ class ServerTestCase(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     # ---- 请求辅助 ----
-    def req(self, method, path, body=None, ctype=None, auth=None):
+    def req(self, method, path, body=None, ctype=None, auth=None, raw=False):
         headers = {}
         if ctype:
             headers["Content-Type"] = ctype
@@ -85,7 +87,9 @@ class ServerTestCase(unittest.TestCase):
         conn = http.client.HTTPConnection(HOST, self.port, timeout=10)
         conn.request(method, path, body=body, headers=headers)
         resp = conn.getresponse()
-        data = resp.read().decode("utf-8")
+        data = resp.read()
+        if not raw:
+            data = data.decode("utf-8")
         self.last_ctype = resp.getheader("Content-Type", "")
         conn.close()
         return resp.status, data
@@ -682,6 +686,95 @@ class ViewsBarTest(ServerTestCase):
         st, body = self.get("/r/views3")
         self.assertEqual(st, 200)
         self.assertNotIn("快捷视图", body)
+
+
+class XlsxExportTest(ServerTestCase):
+    """Task 19：真 .xlsx 导出（format=xlsx 查询参数 + export_format 白名单）。"""
+
+    def _export_xlsx(self, rid):
+        st, body = self.req("GET", f"/r/{rid}/export?format=xlsx", raw=True)
+        self.assertEqual(st, 200)
+        self.assertIn("spreadsheetml.sheet", self.last_ctype)
+        return zipfile.ZipFile(io.BytesIO(body))
+
+    def test_export_xlsx_basic(self):
+        # region 拼 '<b>' 验证端到端 XML 转义；amount 验证 num 列 <v> 数值单元格
+        self.save_report({"name": "xlsx报表", "ds": "demo",
+                          "sql": "SELECT order_id, region || '<b>' AS region, amount, dt"
+                                 " FROM orders ORDER BY order_id",
+                          "params": [], "cache_ttl": 0}, "x1")
+        z = self._export_xlsx("x1")
+        self.assertEqual(z.namelist()[0], "[Content_Types].xml")
+        wb = z.read("xl/workbook.xml").decode()
+        self.assertIn('name="数据"', wb)                    # 无 title 的 table 块默认 sheet 名
+        sheet = z.read("xl/worksheets/sheet1.xml").decode()
+        self.assertIn('t="inlineStr"', sheet)
+        self.assertIn("华东&lt;b&gt;", sheet)               # 端到端 XML 转义
+        # num 列输出 <v> 数值单元格而非 inlineStr（否则 Excel 整列文本/绿三角）
+        self.assertIn('<c r="C2"><v>100.0</v></c>', sheet)
+
+    def test_export_xlsx_summary_and_total_sheets(self):
+        rec = {"name": "摘要合计", "ds": "demo",
+               "sql": "SELECT order_id, region, amount, dt FROM orders ORDER BY order_id",
+               "params": [], "cache_ttl": 0,
+               "summary": [{"col": "amount", "fn": "sum", "label": "销售额"},
+                           {"col": "order_id", "fn": "count", "label": "单数"}],
+               "total": {"label": "合计"}}
+        self.save_report(rec, "x2")
+        z = self._export_xlsx("x2")
+        wb = z.read("xl/workbook.xml").decode()
+        self.assertIn('name="摘要"', wb)
+        s1 = z.read("xl/worksheets/sheet1.xml").decode()
+        self.assertIn("销售额", s1)
+        self.assertIn("<v>1470.8</v>", s1)                  # summary 数值
+        self.assertIn("<v>5</v>", s1)                       # count 计数
+        s2 = z.read("xl/worksheets/sheet2.xml").decode()
+        self.assertIn("合计", s2)
+        self.assertIn("<v>1470.8</v>", s2)                  # 主表末行附合计行（与 xls/csv 口径一致）
+
+    def test_export_xlsx_pivot_block_sheet(self):
+        rec = {"name": "交叉xlsx", "ds": "demo", "sql": "SELECT region, amount FROM orders",
+               "params": [], "cache_ttl": 0,
+               "blocks": [{"type": "pivot", "dataset": "main", "row": "region",
+                           "value": "amount", "agg": "sum", "title": "区域汇总"}]}
+        self.save_report(rec, "x3")
+        z = self._export_xlsx("x3")
+        wb = z.read("xl/workbook.xml").decode()
+        self.assertIn('name="区域汇总"', wb)                # 块 title 作为 sheet 名
+        sheet = z.read("xl/worksheets/sheet1.xml").decode()
+        self.assertIn("<v>350.5</v>", sheet)                # 华东 sum
+        self.assertIn("总计", sheet)                        # col_total 总计行
+
+    def test_export_format_xlsx_as_default(self):
+        # export_format 白名单接纳 xlsx：保存后不带 format 参数的导出走 xlsx
+        self.save_report({"name": "默认xlsx", "ds": "demo", "sql": "SELECT region FROM orders",
+                          "params": [], "export_format": "xlsx"}, "x4")
+        st, body = self.req("GET", "/r/x4/export", raw=True)
+        self.assertEqual(st, 200)
+        self.assertIn("spreadsheetml.sheet", self.last_ctype)
+        z = zipfile.ZipFile(io.BytesIO(body))
+        self.assertIn("xl/worksheets/sheet1.xml", z.namelist())
+        r = server.load_json(os.path.join(self.reports_dir, "x4.json"))
+        self.assertEqual(r["export_format"], "xlsx")
+
+    def test_export_default_xls_backward_compat(self):
+        # 兼容对：不传 format 且 export_format 缺省 → 与 v0.6 完全一致（HTML-.xls）
+        self.save_report({"name": "旧格式", "ds": "demo", "sql": "SELECT region FROM orders",
+                          "params": [], "cache_ttl": 0}, "x5")
+        st, body = self.get("/r/x5/export")
+        self.assertEqual(st, 200)
+        self.assertIn("application/vnd.ms-excel", self.last_ctype)
+        self.assertIn("<table border=\"1\">", body)
+
+    def test_editor_and_viewer_have_xlsx_option(self):
+        self.save_report({"name": "选项", "ds": "demo", "sql": "SELECT region FROM orders",
+                          "params": []}, "x6")
+        st, body = self.get("/edit/x6")
+        self.assertEqual(st, 200)
+        self.assertIn('<option value="xlsx">Excel .xlsx</option>', body)
+        st, body = self.get("/r/x6")
+        self.assertEqual(st, 200)
+        self.assertIn('<option value="xlsx">格式 .xlsx</option>', body)
 
 
 if __name__ == "__main__":

@@ -465,7 +465,7 @@ def render_editor(h, store, reports_dir, rid):
           <div class="field" style="flex:2;min-width:220px"><label>报表名称</label><input id="rname" placeholder="如：订单汇总" value="{esc_html(r.get('name', ''))}"></div>
           <div class="field" style="width:110px"><label>缓存秒数</label><input id="rcache" type="number" value="{r.get('cache_ttl', 0)}" title="0=实时，每次直查数据库"></div>
           <div class="field" style="width:130px"><label>最大行数</label><input id="rmax" type="number" value="{r.get('max_rows', 2000) or 2000}" title="展示行上限，超限截断并提示"></div>
-          <div class="field" style="width:150px"><label>默认导出格式</label><select id="rexp"><option value="xls"{' selected' if fmt == 'xls' else ''}>Excel .xls</option><option value="csv"{' selected' if fmt == 'csv' else ''}>CSV .csv</option></select></div>
+          <div class="field" style="width:150px"><label>默认导出格式</label><select id="rexp"><option value="xls"{' selected' if fmt == 'xls' else ''}>Excel .xls</option><option value="xlsx"{' selected' if fmt == 'xlsx' else ''}>Excel .xlsx</option><option value="csv"{' selected' if fmt == 'csv' else ''}>CSV .csv</option></select></div>
           <div class="field" style="width:130px"><label>查询模式</label><select id="rquery"><option value="manual"{' selected' if qmode == 'manual' else ''}>手动查询</option><option value="auto"{' selected' if qmode == 'auto' else ''}>自动查询</option></select></div>
           <div class="field" style="width:100px"><label>每页行数</label><input id="rpage" type="number" value="{psize}" title="查询结果每页显示行数"></div>
         </div></div>
@@ -752,7 +752,7 @@ def render_viewer(h, store, reports_dir, rid, args):
     form = param_form(r, args)
     fmt = r.get("export_format") or "xls"
     fmt_opts = "".join(f'<option value="{v}"{" selected" if v == fmt else ""}>{lbl}</option>'
-                       for v, lbl in (("xls", "格式 .xls"), ("csv", "格式 .csv")))
+                       for v, lbl in (("xls", "格式 .xls"), ("xlsx", "格式 .xlsx"), ("csv", "格式 .csv")))
     # 保存视图（Task 17）：views = [{name, params}] → 快捷链接（URL 即状态，无后端存储）
     views_html = ""
     views = [v for v in (r.get("views") or []) if isinstance(v, dict) and v.get("name")]

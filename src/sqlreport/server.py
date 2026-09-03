@@ -14,8 +14,9 @@ from sqlreport import views_report
 from sqlreport.db import CACHE, DS_STORE, load_json, run_query, merge_union, merge_lookup
 from sqlreport.params import build_values, substitute, normalize_report, esc, normalize_blocks
 from sqlreport.analytics import (total_row, summary_metrics, top_n_rows, add_share_columns,
-                                 bucket_column, pivot, diff_merge, bin_numeric)
+                                 bucket_column, pivot, diff_merge, bin_numeric, _to_num)
 from sqlreport.views_report import PAGE, nav, page, esc_html
+from sqlreport.xlsx import write_xlsx
 
 BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPORTS_DIR = os.path.join(BASE, "reports")
@@ -411,7 +412,7 @@ updType();
             if isinstance(s, dict) and s.get("mode") == "sql":
                 s["mode"] = "field"
                 s.setdefault("field", "")
-        if data.get("export_format") in ("xls", "csv"):
+        if data.get("export_format") in ("xls", "csv", "xlsx"):
             rec["export_format"] = data["export_format"]  # 默认导出格式
         if data.get("query_mode") in ("auto", "manual"):
             rec["query_mode"] = data["query_mode"]  # auto=打开自动查询；manual=手动查询
@@ -833,6 +834,44 @@ updType();
                 w.writerow(total)  # 与页面所见一致：追加合计行
             fn = urllib.parse.quote(f"{r['name']}.csv")
             self._send(buf.getvalue().encode("utf-8-sig"), "text/csv; charset=utf-8",
+                       f'attachment; filename*=UTF-8\'\'{fn}')
+            return
+
+        if fmt == "xlsx":
+            # Task 19：手写零依赖 xlsx（按 blocks 构造多 sheet）。
+            # run_query 单元格全字符串（db.py 约定），num 列须经 _to_num 转回 float，
+            # 否则 Excel 中整列为文本（绿三角）；转不了的保留原字符串。
+            import io
+            sheets = []
+            if summary:
+                sheets.append({"name": "摘要", "columns": ["指标", "值"],
+                               "rows": [[m.get("label", ""), m.get("value", "")] for m in summary]})
+            blocks = result.get("blocks") or [{"type": "table", "title": "",
+                                               "columns": cols, "rows": rows, "coltypes": coltypes}]
+            default_names = {"table": "数据", "pivot": "透视", "hist": "分箱"}
+            for b in blocks:
+                bct = b.get("coltypes") or coltypes
+                bcols = b.get("columns") or cols
+                brows = b.get("rows") or rows
+                if b.get("type") == "table" and total:
+                    brows = list(brows) + [total]  # 与 xls/csv 口径一致：主表附合计行
+                nrows = []
+                for row in brows:
+                    out = []
+                    for j, v in enumerate(row):
+                        if j < len(bct) and bct[j] == "num":
+                            n = _to_num(v)
+                            out.append(n if n is not None else v)
+                        else:
+                            out.append(v)
+                    nrows.append(out)
+                name = b.get("title") or default_names.get(b.get("type"), "数据")
+                sheets.append({"name": name, "columns": list(bcols), "rows": nrows})
+            buf = io.BytesIO()
+            write_xlsx(sheets, buf)
+            fn = urllib.parse.quote(f"{r['name']}.xlsx")
+            self._send(buf.getvalue(),
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                        f'attachment; filename*=UTF-8\'\'{fn}')
             return
 
