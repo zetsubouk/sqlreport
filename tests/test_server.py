@@ -777,5 +777,25 @@ class XlsxExportTest(ServerTestCase):
         self.assertIn('<option value="xlsx">格式 .xlsx</option>', body)
 
 
+class PrintStyleTest(ServerTestCase):
+    """打印样式（Task 20）：@media print 注入 PAGE 全局 CSS，查看页 Ctrl+P 即交付物。"""
+
+    def test_viewer_page_contains_print_css(self):
+        rec = {"name": "打印", "ds": "demo", "sql": "SELECT region FROM orders", "params": []}
+        self.save_report(rec, "pr1")
+        st, body = self.get("/r/pr1")
+        self.assertEqual(st, 200)
+        self.assertIn("@media print", body)
+        # 类名以实际 CSS 为准：分页条是 .resultbar（计划中的 .pbar 并不存在）
+        self.assertIn(".resultbar", body)
+        self.assertIn(".table-wrap{overflow:visible", body)
+
+    def test_print_css_shared_across_pages(self):
+        # PAGE 是全局模板：列表页同享打印样式（单一注入点，页间不漂移）
+        st, body = self.get("/")
+        self.assertEqual(st, 200)
+        self.assertIn("@media print", body)
+
+
 if __name__ == "__main__":
     unittest.main()

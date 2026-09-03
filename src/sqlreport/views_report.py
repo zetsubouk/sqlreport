@@ -186,6 +186,15 @@ code,.mono{font-family:var(--font-mono);font-size:12.5px}
 .modal .m-btns{display:flex;gap:10px;justify-content:center}
 .hidden{display:none!important}
 @media (max-width:900px){.editor-grid{grid-template-columns:1fr}.stat-grid{grid-template-columns:repeat(2,1fr)}.ds-grid{grid-template-columns:1fr}}
+/* 打印样式（Task 20）：查看页 Ctrl+P 即交付物——隐藏导航/表单/按钮/分页条，表格全量铺开带网格线；KPI 卡横排保留数值，状态行（参数口径）保留 */
+@media print{
+  .nav,.btn,.resultbar,form{display:none!important}
+  body{background:#fff}
+  .table-wrap{overflow:visible!important;max-height:none!important}
+  table{font-size:12px}
+  th,td{border:1px solid #999;padding:4px 8px}
+  .stat{display:inline-block;margin-right:24px;box-shadow:none;break-inside:avoid}
+}
 </style></head><body>
 __NAV__
 <div class="page">__BODY__</div>
