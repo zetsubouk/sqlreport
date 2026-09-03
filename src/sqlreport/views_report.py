@@ -772,6 +772,7 @@ def render_viewer(h, store, reports_dir, rid, args):
         views_html = (f'<div class="viewsbar" style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">'
                       f'<span style="line-height:30px;color:#888">快捷视图：</span>{links}</div>')
     body = f"""<div class="crumb">报表列表 / <b>{name}</b></div>
+        {h._share_bar(rid)}
         {views_html}
         <div class="pagehead"><div><h1>{name}</h1><div class="sub">设置查询条件，查看或导出数据</div></div>
         <div style="display:flex;gap:8px"><a class="btn btn-secondary" href="/edit/{rid}">编辑</a>
@@ -795,6 +796,7 @@ def render_viewer(h, store, reports_dir, rid, args):
 const OUT = document.getElementById('out');
 tblInit(OUT);
 const RID = %(ridq)s;
+const TOK=(new URLSearchParams(location.search)).get('t')||'';
 const DEF_PAGE = %(page)s;
 async function loadOptions(){
   const fd=new FormData(document.getElementById('ff'));
@@ -824,14 +826,14 @@ async function run(){
     const fd=new FormData(document.getElementById('ff'));
     const given={};
     fd.forEach(function(v,k){given[k]=v;});
-    const res=await fetch('/q/'+RID,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    const res=await fetch('/q/'+RID+(TOK?'?t='+encodeURIComponent(TOK):''),{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
       body:new URLSearchParams(fd)});
     const j=await res.json();
     tblShow(OUT,j,DEF_PAGE,given);
   } finally { btns.forEach(function(b){b.disabled=false;}); }
 }
 function exp(){
-  location='/r/'+RID+'/export?'+new URLSearchParams(new FormData(document.getElementById('ff')))+'&format='+document.getElementById('fexp').value;
+  location='/r/'+RID+'/export?'+new URLSearchParams(new FormData(document.getElementById('ff')))+'&format='+document.getElementById('fexp').value+(TOK?'&t='+encodeURIComponent(TOK):'');
 }
 function clr(){
   document.querySelectorAll('#ff input').forEach(function(i){i.value='';});

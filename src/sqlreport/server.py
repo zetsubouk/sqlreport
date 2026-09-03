@@ -7,7 +7,7 @@
 Python 标准库实现；MySQL/SQLServer 驱动按需懒加载（pymysql / pyodbc）。
 运行: python3 server.py [端口]  默认 8765
 """
-import base64, json, os, re, secrets, sys, time, urllib.parse
+import base64, hashlib, hmac, json, os, re, secrets, sys, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from sqlreport import views_report
@@ -28,6 +28,12 @@ def load_config():
         return load_json(CONFIG_FILE)
     except Exception:
         return {"auth": "off", "admin_password": ""}
+
+
+def _mk_token(secret, rid):
+    """分享 token：hmac-sha256(secret, rid+YYYYMMDD) 前 16 位（按日轮换，token 基于 rid 而非 name）。"""
+    return hmac.new(secret.encode(), (rid + time.strftime("%Y%m%d")).encode(),
+                    hashlib.sha256).hexdigest()[:16]
 
 # ---------------- HTTP 处理 ----------------
 
@@ -92,6 +98,40 @@ class Handler(BaseHTTPRequestHandler):
         self._err("管理页仅允许本机（127.0.0.1）访问；如需远程管理请在服务端 config.json 配置 admin_password 启用 HTTP Basic", 403)
         return False
 
+    # ---- token 鉴权（Task 21，可选开关）----
+    def _check_token(self, rid, args):
+        """auth=token 时校验 ?t=（hmac-sha256(secret, rid+YYYYMMDD)[:16]，按日轮换）；
+        off（含 config 缺失）零开销直通；token_secret 缺失 fail-closed 拒绝全部。"""
+        cfg = load_config()
+        if cfg.get("auth") != "token":
+            return True
+        secret = str(cfg.get("token_secret") or "")
+        if not secret:
+            return False
+        return hmac.compare_digest(str(args.get("t") or ""), _mk_token(secret, rid))
+
+    def _admin_if_token(self):
+        """token 模式下管理面（/edit /save /delete_report /preview）纳入 _check_admin——
+        否则持有报表 id 的外部用户可改/删报表，"只读分享"落空；off 模式维持现状直通。"""
+        return load_config().get("auth") != "token" or self._check_admin()
+
+    def _share_bar(self, rid):
+        """token 模式下查看页顶部的「带 token 的分享链接」只读输入框；off 返回空。"""
+        cfg = load_config()
+        if cfg.get("auth") != "token":
+            return ""
+        secret = str(cfg.get("token_secret") or "")
+        if not secret:
+            return ""
+        t = _mk_token(secret, rid)
+        return (f'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0">'
+                f'<span style="font-size:13px;color:var(--text-muted)">分享链接：</span>'
+                f'<input readonly value="/r/{rid}?t={t}" onclick="this.select()" '
+                f'style="flex:1;min-width:260px;padding:6px 10px;border:1px solid var(--border);'
+                f'border-radius:7px;font-size:12.5px">'
+                f'<button type="button" class="btn btn-secondary btn-sm" '
+                f'onclick="copyText(location.origin+this.previousElementSibling.value)">复制</button></div>')
+
     @staticmethod
     def _json_res(obj):
         return json.dumps(obj, ensure_ascii=False), "application/json; charset=utf-8"
@@ -107,6 +147,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._editor(None)
             m = re.match(r"^/edit/(\w+)$", path)
             if m:
+                if not self._admin_if_token():
+                    return
                 return self._editor(m.group(1))
             if path == "/datasources" or path.startswith("/datasources/"):
                 if not self._check_admin():
@@ -121,9 +163,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._err("404")
             m = re.match(r"^/r/(\w+)$", path)
             if m:
+                if not self._check_token(m.group(1), args):
+                    return self._err("需要有效的访问 token（?t=…）；请向报表提供方索取分享链接", 401)
                 return self._viewer(m.group(1), args)
             m = re.match(r"^/r/(\w+)/export$", path)
             if m:
+                if not self._check_token(m.group(1), args):
+                    return self._err("需要有效的访问 token（?t=…）", 401)
                 return self._export(m.group(1), args)
             return self._err("404")
         except Exception as e:
@@ -134,16 +180,30 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         try:
             if path.startswith("/q/"):
+                # 数据出口同样拦截 token（缺一即为绕过点）；query 传 ?t=（前端 run() 透传）
+                if not self._check_token(path[3:], self._args()):
+                    body, ct = self._json_res({"error": "需要有效的访问 token（?t=…）"})
+                    self.send_response(401)
+                    self.send_header("Content-Type", ct)
+                    self.end_headers()
+                    self.wfile.write(body.encode())
+                    return
                 return self._query(path[3:], self._flat(self._body()))
             if path == "/save":
+                if not self._admin_if_token():
+                    return
                 return self._save(self._body())
             if path == "/preview":
+                if not self._admin_if_token():
+                    return
                 return self._preview(self._body())
             if path == "/param-options":
                 return self._param_options(self._body())
             if path == "/ds-fields":
                 return self._ds_fields(self._body())
             if path == "/delete_report":
+                if not self._admin_if_token():
+                    return
                 return self._delete_report(self._body())
             if path.startswith("/datasources/"):
                 if not self._check_admin():

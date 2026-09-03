@@ -2,6 +2,8 @@
 """server.py 进程内集成测试：真实 ThreadingHTTPServer + 临时 sqlite，覆盖全部路由。
 回归项：/q JSON 与 form 双形态（Bug#1）、缓存命中/失效、截断、数据源 CRUD、管理页保护。"""
 import base64
+import hashlib
+import hmac
 import http.client
 import io
 import json
@@ -11,6 +13,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import zipfile
 from http.server import ThreadingHTTPServer
@@ -795,6 +798,97 @@ class PrintStyleTest(ServerTestCase):
         st, body = self.get("/")
         self.assertEqual(st, 200)
         self.assertIn("@media print", body)
+
+
+class TokenAuthTest(ServerTestCase):
+    """token 鉴权（Task 21）：auth=token 可选开关；三类数据出口（/r /q /export）+ 管理面纳管。
+
+    四态：off（缺省/显式）全直通、无 token 401、有效 token 200、错误 token 401；
+    缺 token_secret 时 fail-closed；token 模式下管理面（/edit /save /delete_report /preview）
+    纳入 _check_admin（测试从 127.0.0.1 连接，须显式配 admin_password 才能验证"被拒"）。"""
+
+    def _set_config(self, cfg):
+        with open(server.CONFIG_FILE, "w") as f:
+            json.dump(cfg, f)
+
+    @staticmethod
+    def _mk(rid, secret="s3cret"):
+        return hmac.new(secret.encode(), (rid + time.strftime("%Y%m%d")).encode(),
+                        hashlib.sha256).hexdigest()[:16]
+
+    def test_token_required_when_enabled(self):
+        rec = {"name": "鉴权报表", "ds": "demo", "sql": "SELECT region FROM orders", "params": []}
+        self.save_report(rec, "auth1")
+        self._set_config({"auth": "token", "token_secret": "s3cret"})
+        st, _ = self.req("GET", "/r/auth1")
+        self.assertEqual(st, 401)
+        st, _ = self.req("POST", "/q/auth1", "page=1", "application/x-www-form-urlencoded")
+        self.assertEqual(st, 401)                          # 数据出口同样拦截
+        st, _ = self.req("GET", "/r/auth1/export")
+        self.assertEqual(st, 401)                          # 导出出口同样拦截（缺一即为绕过点）
+        t = self._mk("auth1")
+        st, body = self.req("GET", f"/r/auth1?t={t}")
+        self.assertEqual(st, 200)
+        self.assertIn("分享链接", body)                     # token 模式页面展示分享链接
+        st, _ = self.req("GET", f"/r/auth1/export?t={t}", raw=True)
+        self.assertEqual(st, 200)
+        st, _ = self.req("POST", f"/q/auth1?t={t}", "page=1", "application/x-www-form-urlencoded")
+        self.assertEqual(st, 200)                          # /q 经 URL query 透传 token
+
+    def test_wrong_token_rejected(self):
+        rec = {"name": "鉴权报表", "ds": "demo", "sql": "SELECT region FROM orders", "params": []}
+        self.save_report(rec, "auth2")
+        self._set_config({"auth": "token", "token_secret": "s3cret"})
+        st, _ = self.req("GET", "/r/auth2?t=deadbeefdeadbeef")
+        self.assertEqual(st, 401)
+        st, _ = self.req("GET", "/r/auth2?t=" + self._mk("other"))  # 别的 rid 的 token 不通用
+        self.assertEqual(st, 401)
+
+    def test_token_without_secret_fail_closed(self):
+        rec = {"name": "鉴权报表", "ds": "demo", "sql": "SELECT region FROM orders", "params": []}
+        self.save_report(rec, "auth3")
+        self._set_config({"auth": "token"})                # 缺 token_secret：fail-closed 拒绝全部
+        st, _ = self.req("GET", "/r/auth3")
+        self.assertEqual(st, 401)
+
+    def test_admin_surface_locked_in_token_mode(self):
+        rec = {"name": "鉴权报表", "ds": "demo", "sql": "SELECT region FROM orders", "params": []}
+        self.save_report(rec, "auth4")
+        self._set_config({"auth": "token", "token_secret": "s3cret", "admin_password": "pw"})
+        st, _ = self.req("GET", "/edit/auth4")
+        self.assertEqual(st, 401)
+        st, _ = self.req("POST", "/save", json.dumps(rec), "application/json")
+        self.assertEqual(st, 401)
+        st, _ = self.req("POST", "/delete_report", "id=auth4",
+                         "application/x-www-form-urlencoded")
+        self.assertEqual(st, 401)                          # /delete_report 比编辑更危险，必须纳管
+        st, _ = self.req("POST", "/preview", json.dumps(rec), "application/json")
+        self.assertEqual(st, 401)
+        auth = "Basic " + base64.b64encode(b"admin:pw").decode()
+        st, _ = self.req("GET", "/edit/auth4", auth=auth)
+        self.assertEqual(st, 200)
+
+    def test_auth_off_full_regression(self):
+        # 兼容对：auth=off 显式配置时全直通，行为与 v0.6 完全一致
+        rec = {"name": "off回归", "ds": "demo", "sql": "SELECT region FROM orders", "params": []}
+        self.save_report(rec, "off1")
+        self._set_config({"auth": "off"})
+        st, _ = self.get("/r/off1")
+        self.assertEqual(st, 200)
+        st, _ = self.post_form("/q/off1", {"page": "1"})
+        self.assertEqual(st, 200)
+        st, _ = self.get("/r/off1/export")
+        self.assertEqual(st, 200)
+        st, _ = self.get("/edit/off1")
+        self.assertEqual(st, 200)
+
+    def test_no_config_file_defaults_off(self):
+        # config.json 不存在 → 缺省 off（零配置直通，load_config 异常兜底）
+        rec = {"name": "缺省off", "ds": "demo", "sql": "SELECT region FROM orders", "params": []}
+        self.save_report(rec, "off2")
+        self.assertFalse(os.path.exists(server.CONFIG_FILE))
+        st, _ = self.get("/r/off2")
+        self.assertEqual(st, 200)
 
 
 if __name__ == "__main__":
