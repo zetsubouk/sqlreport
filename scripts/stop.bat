@@ -2,6 +2,7 @@
 chcp 65001 >nul
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
+if exist "..\pyproject.toml" cd /d "%~dp0.."
 if exist "..\server.py" cd /d "%~dp0.."
 
 if "%PORT%"=="" set PORT=8765
