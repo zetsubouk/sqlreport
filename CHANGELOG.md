@@ -15,6 +15,44 @@
   端口占用检查 + `curl` 健康检查 + pidfile 管理；根目录 `start.sh` / `stop.sh` 薄转发；
   Windows `scripts/*.bat` 保留并同步改用 `-m sqlreport` 模块入口
 
+## \[v0.9.2] - 2026-09-05
+
+### 变更
+
+- **界面稳健微调（A 方案，仅 `views_report.py`）**：全局文字对比度提升
+  （`--text-secondary` / `--text-muted` 加深）；补齐键盘可达性（链接 / 按钮 / 表格排序列 / 操作链接
+  `:focus-visible` 统一描边，列头 `tabindex=0` 支持 Enter / 空格排序）；新增
+  `prefers-reduced-motion` 动效降级；打印样式补齐（页面通栏、卡片防断页、单元格自动换行，
+  长表 Ctrl+P 不断裂）
+- **查看页操作分组**：查询栏拆为「查询（主按钮）+ 导出与格式（一组）+ 复制 URL / 清空条件
+  （右对齐弱化组）」，小屏自动换行；快捷视图按钮改小尺寸并去内联样式；
+  KPI 区无摘要时不再占高（`:empty` 隐藏）；多块标题间距统一
+- **浏览页分组样式收敛**：分组折叠头 / 列表 / 卡片内联样式收进 class（`.grp-sum` /
+  `.grp-list` / `.browse-card-*`），视觉不变
+- **编辑器细节**：SQL / 候选值 SQL / 下拉选项等代码输入统一等宽样式（`.code-input`）；
+  参数抽屉支持 Esc 关闭；参数行聚焦高亮（`:focus-within`）
+
+### 修复
+
+- **Windows 启动脚本 Python 探测（`scripts/start.bat`）**：改为按 `python / py / python3`
+  逐候选「where + 真实执行 + 版本 ≥3.10」三重验证轮询，跳过 Microsoft Store 无效跳转；
+  全部失败时扫描常见安装目录（`%LocalAppData%\Programs\Python\Python3*` 等）兜底，
+  仍无可用解释器时输出明确的排查指引（`where python` / `py --list` 等 5 条命令）
+- **驱动检测误判**：`for` 循环内 `if not !errorlevel!==0` 会被中间 `set` 置 0 造成误判，
+  统一改 `if errorlevel 1`；驱动安装提示默认 N（直接回车跳过，仅用 SQLite 不再被打断）；
+  安装后仅复验仍缺失的驱动
+- **包自检与 PYTHONPATH 传递**：`src` 布局兜底设置 `PYTHONPATH` 后复验 `import sqlreport`，
+  失败给出明确提示；后台启动（`start pythonw`）显式传递 `PYTHONPATH`（`start` 异步进程
+  继承不到 `setlocal` 环境变量，旧版会导致「未找到 sqlreport 包」误报）；启动行打印所用
+  Python 与 `PYTHONPATH` 便于排查
+- **`scripts/stop.bat` 目录回退**：与 `start.bat` 同步支持 `src` 布局（`pyproject.toml` 判定），
+  双击与根目录转发路径行为一致
+
+### 兼容性
+
+- 报表 JSON 格式、路由、查询 / 导出链路与 v0.9.1 完全一致，旧报表零迁移；
+  页面为纯样式与可达性微调，测试 458 项全过（Python 3.14）
+
 ## \[v0.9.1] - 2026-09-04
 
 ### 变更
